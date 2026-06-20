@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+from ipaddress import ip_address
+
+from .models import ScanResult
+
+
+OUI_VENDORS = {
+    "00:1a:2b": "Cisco",
+    "00:1b:63": "Apple",
+    "00:1c:b3": "Apple",
+    "3c:22:fb": "Apple",
+    "f0:18:98": "Apple",
+    "dc:a6:32": "Raspberry Pi",
+    "b8:27:eb": "Raspberry Pi",
+    "e4:5f:01": "Raspberry Pi",
+    "00:11:32": "Synology",
+    "24:5e:be": "QNAP",
+    "00:09:34": "Dell",
+    "3c:97:0e": "Wistron",
+    "70:85:c2": "ASUSTek",
+    "f4:f5:d8": "Google",
+    "d8:3a:dd": "Google",
+    "bc:92:6b": "Samsung",
+    "fc:8f:90": "Samsung",
+    "a4:77:33": "Google Nest",
+    "44:65:0d": "Amazon",
+    "fc:a1:83": "Amazon",
+}
+
+
+class DeviceIntelligence:
+    def classify(
+        self,
+        result: ScanResult,
+        *,
+        known: bool,
+        gateway_ip: str | None = None,
+    ) -> tuple[str, str, str, int]:
+        vendor = self.vendor_for(result.mac)
+        device_type = self.device_type_for(result, vendor, gateway_ip)
+        risk_label, risk_score = self.risk_for(result, known, device_type, vendor)
+        return vendor, device_type, risk_label, risk_score
+
+    @staticmethod
+    def vendor_for(mac: str) -> str:
+        if not mac:
+            return "Unknown vendor"
+        normalized = mac.replace("-", ":").lower()
+        return OUI_VENDORS.get(normalized[:8], "Unknown vendor")
+
+    @staticmethod
+    def device_type_for(result: ScanResult, vendor: str, gateway_ip: str | None) -> str:
+        hostname = (result.hostname or "").lower()
+        if gateway_ip and result.ip == gateway_ip:
+            return "gateway"
+        if any(token in hostname for token in ("router", "gateway", "fritz", "openwrt")):
+            return "gateway"
+        if any(token in hostname for token in ("nas", "synology", "qnap")):
+            return "storage"
+        if any(token in hostname for token in ("iphone", "ipad", "android", "phone")):
+            return "mobile"
+        if any(token in hostname for token in ("tv", "chromecast", "nest", "alexa", "echo")):
+            return "iot"
+        if vendor in {"Synology", "QNAP"}:
+            return "storage"
+        if vendor in {"Google Nest", "Amazon"}:
+            return "iot"
+        return "host"
+
+    @staticmethod
+    def risk_for(
+        result: ScanResult,
+        known: bool,
+        device_type: str,
+        vendor: str,
+    ) -> tuple[str, int]:
+        if device_type == "gateway":
+            return "trusted", 5
+        if known:
+            return "trusted", 15
+        score = 55
+        if vendor == "Unknown vendor":
+            score += 20
+        if not result.mac:
+            score += 10
+        if _is_link_local(result.ip):
+            score += 10
+        if score >= 75:
+            return "watch", score
+        return "unknown", score
+
+
+def _is_link_local(ip: str) -> bool:
+    try:
+        return ip_address(ip).is_link_local
+    except ValueError:
+        return False
