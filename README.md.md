@@ -1,3 +1,8 @@
+<div align="center">
+  <img src="assets/logo.png" width="400">
+  <h1>NetPulse</h1>
+</div>
+
 # NetPulse
 
 NetPulse is a Python CLI/TUI for discovering, inspecting, and visualizing devices on a local network. It uses `asyncio` for non-blocking scans and `Rich` for a terminal dashboard with a strong visual identity.
