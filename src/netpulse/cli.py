@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from .demo import demo_registry, demo_scan_results
 from .input import KeyboardInput, LineKeyboardInput
 from .network import NetworkEngine
 from .persistence import DeviceRegistry, RegistryError
@@ -40,6 +41,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--watch",
         action="store_true",
         help="Keep scanning every --interval seconds; default mode refreshes manually with R",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Load a synthetic LAN snapshot for screenshots without scanning the real network",
+    )
+    parser.add_argument(
+        "--demo-view",
+        choices=["table", "map", "cards"],
+        default="map",
+        help="Initial dashboard view for --demo mode",
     )
     parser.add_argument(
         "--once",
@@ -104,6 +116,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run(args: argparse.Namespace) -> None:
     console = Console()
+
+    if args.demo:
+        state = NetworkState(demo_registry(), gateway_ip="192.168.1.1")
+        state.add_event("NetPulse started in demo mode", "info")
+        await run_demo(
+            console,
+            state,
+            alt_screen=args.alt_screen,
+            line_input=args.line_input,
+            plain=args.plain,
+            initial_view=args.demo_view,
+        )
+        return
+
     registry = DeviceRegistry(args.registry)
     try:
         registry.load()
@@ -193,6 +219,46 @@ async def preload_dashboard_state(engine: NetworkEngine, state: NetworkState) ->
         state.scanning = False
 
 
+async def run_demo(
+    console: Console,
+    state: NetworkState,
+    *,
+    alt_screen: bool = False,
+    line_input: bool = False,
+    plain: bool = False,
+    initial_view: str = "map",
+) -> None:
+    state.apply_scan_results(demo_scan_results())
+    state.view_mode = initial_view
+    state.add_event("Demo snapshot loaded: synthetic devices only", "info")
+    state.last_action = "demo"
+
+    if plain:
+        _print_plain_devices(state)
+        return
+
+    dashboard = Dashboard(state, alt_screen=alt_screen, line_input=line_input)
+    stop_event = asyncio.Event()
+    scan_now = asyncio.Event()
+    try:
+        input_task: asyncio.Task | None = None
+        with dashboard.live() as live:
+            input_task = asyncio.create_task(
+                _input_loop(
+                    state,
+                    stop_event,
+                    scan_now,
+                    live=live,
+                    line_input=line_input,
+                )
+            )
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_event.wait()
+            await _cancel_dashboard_tasks(input_task)
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]NetPulse demo closed[/]")
+
+
 async def run_once(
     console: Console,
     engine: NetworkEngine,
@@ -209,13 +275,7 @@ async def run_once(
     state.apply_scan_results(results)
 
     if plain:
-        print(f"devices={len(state.devices)}")
-        for device in state.sorted_devices():
-            latency = "n/d" if device.latency_ms is None else f"{device.latency_ms:.0f}ms"
-            print(
-                f"{device.ip:<15} {device.mac or 'unknown':<17} "
-                f"{device.device_type:<8} {device.risk_label:<8} {latency:<8} {device.name}"
-            )
+        _print_plain_devices(state)
         return
 
     table = Table(title=f"Detected devices: {len(state.devices)}")
@@ -238,6 +298,16 @@ async def run_once(
         )
 
     console.print(table)
+
+
+def _print_plain_devices(state: NetworkState) -> None:
+    print(f"devices={len(state.devices)}")
+    for device in state.sorted_devices():
+        latency = "n/d" if device.latency_ms is None else f"{device.latency_ms:.0f}ms"
+        print(
+            f"{device.ip:<15} {device.mac or 'unknown':<17} "
+            f"{device.device_type:<8} {device.risk_label:<8} {latency:<8} {device.name}"
+        )
 
 
 async def run_diagnostics(console: Console, engine: NetworkEngine, state: NetworkState) -> None:

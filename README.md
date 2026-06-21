@@ -1,10 +1,36 @@
 <div align="center">
-  <img src="assets/logo.png" width="400">
+  <img src="assets/logo.png" width="420" alt="NetPulse">
+  <p><strong>Local network discovery, presence monitoring, and signal mapping in your terminal.</strong></p>
 </div>
 
 # NetPulse
 
 NetPulse is a Python CLI/TUI for discovering, inspecting, and visualizing devices on a local network. It uses `asyncio` for non-blocking scans and `Rich` for a terminal dashboard with a strong visual identity.
+
+![NetPulse dashboard demo](assets/demo-dashboard.png)
+
+## Highlights
+
+- ARP-first discovery with optional deep subnet scans.
+- Interactive Rich dashboard with table, card, and signal-map views.
+- Local-only device intelligence for vendor, type, risk, and known-device status.
+- SQLite history for snapshots, latency metrics, events, alerts, and timelines.
+- Screenshot-safe demo mode with synthetic devices and no real network scan.
+
+## Quick Start
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+netpulse 192.168.1.0/24
+```
+
+Preview the dashboard with synthetic data:
+
+```powershell
+netpulse 192.168.1.0/24 --demo
+```
 
 ## Project Structure
 
@@ -51,6 +77,12 @@ For continuous monitoring:
 
 ```powershell
 netpulse 192.168.1.0/24 --watch --interval 5
+```
+
+For screenshots or demos without scanning your real network:
+
+```powershell
+netpulse 192.168.1.0/24 --demo
 ```
 
 For a deeper subnet scan:

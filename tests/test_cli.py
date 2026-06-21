@@ -50,6 +50,21 @@ class CliParserTests(unittest.TestCase):
 
         self.assertEqual(args.retention_days, 0)
 
+    def test_accepts_demo_mode(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["192.168.1.0/24", "--demo"])
+
+        self.assertTrue(args.demo)
+        self.assertEqual(args.demo_view, "map")
+
+    def test_accepts_demo_view(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["192.168.1.0/24", "--demo", "--demo-view", "cards"])
+
+        self.assertEqual(args.demo_view, "cards")
+
 
 if __name__ == "__main__":
     unittest.main()
