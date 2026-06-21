@@ -166,7 +166,7 @@ async def run(args: argparse.Namespace) -> None:
         history.close()
         return
 
-    await preload_dashboard_state(engine, state)
+    await run_initial_scan(engine, state)
     dashboard = Dashboard(state, alt_screen=args.alt_screen, line_input=args.line_input)
     stop_event = asyncio.Event()
     scan_now = asyncio.Event()
@@ -175,7 +175,9 @@ async def run(args: argparse.Namespace) -> None:
         scan_task: asyncio.Task | None = None
         input_task: asyncio.Task | None = None
         with dashboard.live() as live:
-            scan_task = asyncio.create_task(_scan_loop(engine, state, stop_event, scan_now, watch=args.watch))
+            scan_task = asyncio.create_task(
+                _scan_loop(engine, state, stop_event, scan_now, watch=args.watch, live=live)
+            )
             input_task = asyncio.create_task(
                 _input_loop(
                     state,
@@ -204,19 +206,9 @@ async def _cancel_dashboard_tasks(*tasks: asyncio.Task | None) -> None:
             await task
 
 
-async def preload_dashboard_state(engine: NetworkEngine, state: NetworkState) -> None:
-    state.scanning = True
-    try:
-        snapshot = await engine.arp_snapshot()
-        if snapshot:
-            state.apply_scan_results(snapshot)
-            state.add_event(f"Initial ARP snapshot: {len(snapshot)} visible hosts", "info")
-        else:
-            state.add_event("Initial ARP snapshot is empty", "warning")
-    except Exception as exc:
-        state.add_event(f"Initial ARP snapshot error: {exc}", "error")
-    finally:
-        state.scanning = False
+async def run_initial_scan(engine: NetworkEngine, state: NetworkState) -> None:
+    state.add_event("Initial manual scan requested", "info")
+    await _run_scan(engine, state)
 
 
 async def run_demo(
@@ -361,6 +353,7 @@ async def _scan_loop(
     scan_now: asyncio.Event,
     *,
     watch: bool = False,
+    live=None,
 ) -> None:
     while not stop_event.is_set():
         scan_now.clear()
@@ -373,11 +366,13 @@ async def _scan_loop(
             pass
         if stop_event.is_set():
             break
-        await _run_scan(engine, state)
+        await _run_scan(engine, state, live=live)
 
 
-async def _run_scan(engine: NetworkEngine, state: NetworkState) -> None:
+async def _run_scan(engine: NetworkEngine, state: NetworkState, *, live=None) -> None:
     state.scanning = True
+    if live is not None:
+        live.refresh()
     try:
         state.add_event(
             f"Scan started ({'deep' if engine.deep_scan else 'arp-first'}, up to {engine.host_count} hosts)",
@@ -395,6 +390,8 @@ async def _run_scan(engine: NetworkEngine, state: NetworkState) -> None:
         state.add_event(f"Scan error: {exc}", "error")
     finally:
         state.scanning = False
+        if live is not None:
+            live.refresh()
 
 
 async def _input_loop(

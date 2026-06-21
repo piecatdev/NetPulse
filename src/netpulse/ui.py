@@ -30,17 +30,20 @@ class Dashboard:
         refresh_per_second: int = 2,
         alt_screen: bool = False,
         line_input: bool = False,
+        auto_refresh: bool = False,
     ) -> None:
         self.state = state
         self.refresh_per_second = refresh_per_second
         self.alt_screen = alt_screen
         self.line_input = line_input
+        self.auto_refresh = auto_refresh
 
     def live(self) -> Live:
         return Live(
             self.render(),
             get_renderable=self.render,
             refresh_per_second=self.refresh_per_second,
+            auto_refresh=self.auto_refresh,
             screen=self.alt_screen,
             transient=False,
         )
