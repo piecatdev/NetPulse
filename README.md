@@ -156,6 +156,13 @@ You can choose a different history database:
 netpulse 192.168.1.0/24 --history lan-history.db
 ```
 
+By default, NetPulse keeps all stored metrics and events. To prune old runtime
+history on startup, set a retention window:
+
+```powershell
+netpulse 192.168.1.0/24 --watch --retention-days 30
+```
+
 ## Friendly Names
 
 NetPulse uses `devices.json` to associate friendly names with MAC addresses:
@@ -211,4 +218,20 @@ Test keyboard input:
 
 ```powershell
 netpulse 192.168.1.0/24 --key-test
+```
+
+## Development
+
+Run the unit tests with the project virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -v
+```
+
+If you want to run a full bytecode compilation check on Windows/OneDrive,
+write Python's cache outside the project directory:
+
+```powershell
+$env:PYTHONPYCACHEPREFIX = Join-Path $env:TEMP 'netpulse-pycache'
+.\.venv\Scripts\python.exe -m compileall src tests
 ```

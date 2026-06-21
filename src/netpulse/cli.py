@@ -11,7 +11,7 @@ from rich.table import Table
 
 from .input import KeyboardInput, LineKeyboardInput
 from .network import NetworkEngine
-from .persistence import DeviceRegistry
+from .persistence import DeviceRegistry, RegistryError
 from .state import NetworkState
 from .storage import HistoryStore
 from .ui import Dashboard
@@ -23,9 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Monitor device presence and latency on a local network.",
     )
     parser.add_argument("cidr", help="Network to scan, e.g. 192.168.1.0/24")
-    parser.add_argument("--interval", type=float, default=5.0, help="Seconds between scans in --watch mode")
-    parser.add_argument("--timeout", type=float, default=1.0, help="Ping timeout per host")
-    parser.add_argument("--concurrency", type=int, default=64, help="Concurrent ping probes")
+    parser.add_argument("--interval", type=_positive_float, default=5.0, help="Seconds between scans in --watch mode")
+    parser.add_argument("--timeout", type=_positive_float, default=1.0, help="Ping timeout per host")
+    parser.add_argument("--concurrency", type=_positive_int, default=64, help="Concurrent ping probes")
     parser.add_argument(
         "--deep-scan",
         action="store_true",
@@ -93,13 +93,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("netpulse.db"),
         help="SQLite database for history, metrics, and timelines",
     )
+    parser.add_argument(
+        "--retention-days",
+        type=_non_negative_int,
+        default=0,
+        help="Delete metrics/events older than this many days on startup; 0 disables pruning",
+    )
     return parser
 
 
 async def run(args: argparse.Namespace) -> None:
     console = Console()
     registry = DeviceRegistry(args.registry)
-    registry.load()
+    try:
+        registry.load()
+    except RegistryError as exc:
+        console.print(f"[bold red]Registry error:[/] {exc}")
+        raise SystemExit(2) from exc
 
     engine = NetworkEngine(
         cidr=args.cidr,
@@ -109,7 +119,7 @@ async def run(args: argparse.Namespace) -> None:
         deep_scan=args.deep_scan,
         resolve_names=args.resolve_names,
     )
-    history = HistoryStore(args.history)
+    history = HistoryStore(args.history, retention_days=args.retention_days)
     history.connect()
 
     state = NetworkState(registry, history=history, gateway_ip=engine.gateway_ip)
@@ -384,6 +394,36 @@ def _write_input_log(path: Path | None, line: str) -> None:
             file.write(line + "\n")
     except OSError:
         return
+
+
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return parsed
 
 
 def main() -> None:

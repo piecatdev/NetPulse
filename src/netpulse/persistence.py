@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 
+class RegistryError(ValueError):
+    """Raised when the device registry cannot be loaded or saved."""
+
+
 class DeviceRegistry:
     """Maps MAC addresses to friendly names stored in a JSON file."""
 
@@ -17,8 +21,18 @@ class DeviceRegistry:
             self._names_by_mac = {}
             return
 
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        devices: dict[str, Any] = data.get("devices", {})
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RegistryError(f"Invalid registry JSON in {self.path}: {exc.msg}") from exc
+
+        if not isinstance(data, dict):
+            raise RegistryError(f"Invalid registry JSON in {self.path}: expected an object")
+
+        devices: Any = data.get("devices", {})
+        if not isinstance(devices, dict):
+            raise RegistryError(f"Invalid registry JSON in {self.path}: devices must be an object")
+
         self._names_by_mac = {
             self._normalize_mac(mac): str(entry.get("name", "")).strip()
             for mac, entry in devices.items()
@@ -42,7 +56,13 @@ class DeviceRegistry:
         return bool(mac) and self._normalize_mac(mac) in self._names_by_mac
 
     def set_name(self, mac: str, name: str) -> None:
-        self._names_by_mac[self._normalize_mac(mac)] = name.strip()
+        normalized = self._normalize_mac(mac)
+        clean_name = name.strip()
+        if not normalized:
+            raise RegistryError("MAC address cannot be empty")
+        if not clean_name:
+            raise RegistryError("Device name cannot be empty")
+        self._names_by_mac[normalized] = clean_name
         self.save()
 
     @staticmethod

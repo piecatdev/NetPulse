@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .models import Device, NetworkEvent
 
 
 class HistoryStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, retention_days: int = 0) -> None:
         self.path = path
+        self.retention_days = retention_days
         self.connection: sqlite3.Connection | None = None
 
     def connect(self) -> None:
@@ -19,6 +20,7 @@ class HistoryStore:
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=NORMAL")
         self._migrate()
+        self.prune_history()
 
     def close(self) -> None:
         if self.connection is not None:
@@ -96,6 +98,15 @@ class HistoryStore:
             (device_id, f"%{device_id}%", limit),
         ).fetchall()
         return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+    def prune_history(self) -> None:
+        if self.retention_days <= 0:
+            return
+        cutoff = (datetime.now() - timedelta(days=self.retention_days)).isoformat(timespec="seconds")
+        conn = self._conn()
+        conn.execute("DELETE FROM metrics WHERE captured_at < ?", (cutoff,))
+        conn.execute("DELETE FROM events WHERE captured_at < ?", (cutoff,))
+        conn.commit()
 
     def _migrate(self) -> None:
         conn = self._conn()
