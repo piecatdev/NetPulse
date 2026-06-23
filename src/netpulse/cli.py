@@ -413,10 +413,14 @@ def _print_memory_report(
 ) -> None:
     known = sum(1 for record in records if record.known)
     unknown = len(records) - known
+    latency_rows = history.latency_summary(limit=max(limit, 10))
+    baseline = history.baseline_records()
+    baseline_findings = _baseline_findings(baseline, records) if baseline else []
     console.print(
         f"[bold cyan]NetPulse memory[/] devices={len(records)} "
         f"known={known} unknown={unknown}"
     )
+    console.print(_memory_status_line(records, unknown, latency_rows, baseline, baseline_findings))
 
     devices = Table(title="Remembered devices")
     devices.add_column("Device", no_wrap=True, overflow="ellipsis")
@@ -437,7 +441,6 @@ def _print_memory_report(
         devices.add_row("No remembered devices", "", "", "", "")
     console.print(devices)
 
-    latency_rows = history.latency_summary(limit=limit)
     if latency_rows:
         names_by_id = {record.device_id: record.name for record in records}
         latency = Table(title="Latency signals")
@@ -445,7 +448,7 @@ def _print_memory_report(
         latency.add_column("Samples", justify="right")
         latency.add_column("Average", justify="right")
         latency.add_column("Peak", justify="right")
-        for device_id, samples, average, peak in latency_rows:
+        for device_id, samples, average, peak in latency_rows[:limit]:
             latency.add_row(
                 _clip_plain(names_by_id.get(device_id, device_id), 28),
                 str(samples),
@@ -464,6 +467,35 @@ def _print_memory_report(
     if not events:
         event_table.add_row("n/d", "info", "No events recorded yet")
     console.print(event_table)
+
+
+def _memory_status_line(
+    records: list[DeviceMemoryRecord],
+    unknown_count: int,
+    latency_rows: list[tuple[str, int, float | None, float | None]],
+    baseline: list[DeviceMemoryRecord],
+    baseline_findings: list[tuple[str, str, str]],
+) -> str:
+    high_latency_count = sum(1 for _device_id, _samples, average, peak in latency_rows if (peak or average or 0) > 350)
+    if not records:
+        status = "no history"
+        detail = "run a scan to create local memory"
+    elif not baseline:
+        status = "learning"
+        detail = "baseline not saved"
+    elif baseline_findings:
+        status = "needs review"
+        detail = f"{len(baseline_findings)} baseline change(s)"
+    else:
+        status = "approved"
+        detail = "current memory matches the approved baseline"
+
+    signals = [detail]
+    if unknown_count:
+        signals.append(f"{unknown_count} unknown")
+    if high_latency_count:
+        signals.append(f"{high_latency_count} high-latency")
+    return f"Network status: {status} ({'; '.join(signals)})"
 
 
 def _print_device_timeline(
@@ -694,7 +726,7 @@ async def _input_loop(
     input_log: Path | None = None,
 ) -> None:
     keyboard = LineKeyboardInput() if line_input else KeyboardInput()
-    state.add_event("Input loop avviato", "info")
+    state.add_event("Input loop started", "info")
     _write_input_log(input_log, "input-loop-started")
     if live is not None:
         live.refresh()

@@ -225,7 +225,7 @@ class NetworkState:
         current = modes.index(self.view_mode) if self.view_mode in modes else 0
         self.view_mode = modes[(current + 1) % len(modes)]
         self.last_action = f"view {self.view_mode}"
-        self.add_event(f"Vista: {self.view_mode}", "info")
+        self.add_event(f"View changed: {self.view_mode}", "info")
 
     def _clamp_memory_scroll(self, page_size: int = 7) -> None:
         maximum = max(0, len(self.network_memory.findings) - page_size)

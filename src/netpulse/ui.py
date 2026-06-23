@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from rich.align import Align
 from rich.layout import Layout
 from rich.live import Live
@@ -64,7 +62,6 @@ class Dashboard:
         return layout
 
     def _render_header(self) -> Panel:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         total = len(self.state.devices)
         online = sum(1 for device in self.state.devices.values() if device.online)
         unknown = sum(1 for device in self.state.devices.values() if not device.known)
@@ -75,12 +72,12 @@ class Dashboard:
             else "never"
         )
 
-        header = Table.grid(expand=True)
+        header = Table.grid(expand=True, padding=(0, 1))
         header.add_column(justify="left")
         header.add_column(justify="center")
         header.add_column(justify="right")
         header.add_row(
-            f"[bold {ACCENT}]NETPULSE[/] [dim]// local signal surface[/] [dim]{now}[/]",
+            f"[bold {ACCENT}]NETPULSE[/] [dim]// local signal surface[/]",
             f"[{MUTED}]state[/] {status} [{MUTED}]last[/] {last_scan} [{MUTED}]scan[/] {self.state.last_scan_count} [{MUTED}]view[/] [bold {ACCENT}]{self.state.view_mode}[/]",
             f"[bold {PULSE}]{online}/{total}[/] [{MUTED}]online[/] [bold {WARNING}]{unknown} unknown[/]",
         )
@@ -219,68 +216,77 @@ class Dashboard:
 
     def _render_network_map(self) -> Panel:
         devices = self.state.sorted_devices()
-        gateway_ip = self.state.gateway_ip or "gateway stimato"
         selected = self.state.selected_device()
-        graph = Text(no_wrap=False, overflow="fold")
-        visible, page, total_pages = self._map_visible_devices(devices, page_size=12)
-        left_nodes = visible[:6]
-        right_nodes = visible[6:12]
+        visible, page, total_pages = self._map_visible_devices(devices, page_size=10)
         online = sum(1 for device in devices if device.online)
+        offline = len(devices) - online
         watch = sum(1 for device in devices if device.risk_label in {"unknown", "watch"})
+        trusted = sum(1 for device in devices if device.risk_label == "trusted")
+        gateway = next((device for device in devices if device.device_type == "gateway"), None)
+        gateway_label = gateway.ip if gateway is not None else (self.state.gateway_ip or "not detected")
 
-        self._append_map_line(graph, "              _   _ _____ _____ ____  _   _ _     ____  _____", ACCENT)
-        self._append_map_line(graph, "             | \\ | | ____|_   _|  _ \\| | | | |   / ___|| ____|", ACCENT)
-        self._append_map_line(graph, "             |  \\| |  _|   | | | |_) | | | | |   \\___ \\|  _|", ACCENT)
-        self._append_map_line(graph, "             | |\\  | |___  | | |  __/| |_| | |___ ___) | |___", ACCENT)
-        self._append_map_line(graph, "             |_| \\_|_____| |_| |_|    \\___/|_____|____/|_____|", ACCENT)
-        self._append_map_line(graph, "", MUTED)
-        self._append_map_line(graph, "        .--------------------------- WAN ---------------------------.", MUTED)
-        self._append_map_line(graph, f"        | uplink -> gateway {gateway_ip:<15} -> LAN signal core     |", PULSE)
-        self._append_map_line(graph, "        '-----------------------------+-----------------------------'", MUTED)
-        self._append_map_line(graph, "                                      |", MUTED)
-        self._append_map_line(graph, "                         .------------+------------.", MUTED)
-        self._append_map_line(graph, "                         |      NETPULSE CORE      |", ACCENT)
-        self._append_map_line(graph, f"                         | online {online:<3} watch {watch:<3} page {page}/{total_pages:<2} |", TEXT)
-        self._append_map_line(graph, "                         '------------+------------'", MUTED)
-        self._append_map_line(graph, "                         /                         \\", MUTED)
-        self._append_map_line(graph, "                CORE / KNOWN                 WATCH / UNKNOWN", MUTED)
-        self._append_map_line(graph, "              .--------------.             .--------------.", MUTED)
+        content = Table.grid(expand=True)
+        content.add_row(self._map_brand())
+        content.add_row("")
 
-        max_rows = max(len(left_nodes), len(right_nodes), 1)
-        for index in range(max_rows):
-            left = self._map_node_chip(left_nodes[index]) if index < len(left_nodes) else " " * 30
-            right = self._map_node_chip(right_nodes[index]) if index < len(right_nodes) else ""
-            left_style = self._node_style(left_nodes[index]) if index < len(left_nodes) else MUTED
-            right_style = self._node_style(right_nodes[index]) if index < len(right_nodes) else MUTED
-            graph.append("        ")
-            graph.append(left, style=left_style)
-            graph.append("  ==== core ====  ", style=MUTED)
-            graph.append(right, style=right_style)
-            graph.append("\n")
+        summary = Table.grid(expand=True)
+        for _ in range(5):
+            summary.add_column(ratio=1)
+        summary.add_row(
+            f"[{MUTED}]gateway[/]\n[bold {ACCENT}]{gateway_label}[/]",
+            f"[{MUTED}]online[/]\n[bold {PULSE}]{online}/{len(devices)}[/]",
+            f"[{MUTED}]attention[/]\n[bold {WARNING}]{watch}[/]",
+            f"[{MUTED}]offline[/]\n[bold {DANGER}]{offline}[/]",
+            f"[{MUTED}]trusted[/]\n[bold {PULSE}]{trusted}[/]",
+        )
+        content.add_row(summary)
+        content.add_row("")
 
-        self._append_map_line(graph, "              '--------------'             '--------------'", MUTED)
-        self._append_map_line(graph, "", MUTED)
-        self._append_map_line(graph, self._map_distribution_line(devices), ACCENT)
+        if not devices:
+            empty = Align.center(
+                Text("No scan data yet. Press R to scan, or start with --demo.", style=MUTED),
+                vertical="middle",
+            )
+            content.add_row(empty)
+        else:
+            nodes = Table(expand=True)
+            nodes.add_column("", width=2)
+            nodes.add_column("IP", no_wrap=True)
+            nodes.add_column("Device", no_wrap=True, overflow="ellipsis")
+            nodes.add_column("Type", no_wrap=True)
+            nodes.add_column("Risk", no_wrap=True)
+            nodes.add_column("Latency", justify="right", no_wrap=True)
+            for device in visible:
+                selected_marker = ">" if device.id == self.state.selected_device_id else ""
+                nodes.add_row(
+                    f"[{WARNING}]{selected_marker}[/]",
+                    f"[{MUTED}]{device.ip}[/]",
+                    f"[{self._node_style(device)}]{self._short_name(device, 24)}[/]",
+                    device.device_type,
+                    f"[{self._risk_style(device)}]{device.risk_label}[/]",
+                    self._latency_label(device),
+                )
+            content.add_row(nodes)
 
         if selected is not None:
-            self._append_map_line(graph, "", MUTED)
-            self._append_map_line(graph, "       .---------------- SELECTED NODE ----------------.", WARNING)
-            self._append_map_line(
-                graph,
-                f"       | {selected.ip:<15} {selected.name[:26]:<26} |",
-                TEXT,
+            content.add_row("")
+            focus = Table.grid(expand=True)
+            focus.add_column(ratio=2)
+            focus.add_column(ratio=1)
+            focus.add_column(ratio=1)
+            focus.add_column(ratio=1)
+            focus.add_row(
+                f"[bold {WARNING}]Focus[/] {self._short_name(selected, 28)}",
+                f"[{MUTED}]IP[/] {selected.ip}",
+                f"[{MUTED}]risk[/] [{self._risk_style(selected)}]{selected.risk_label}[/]",
+                f"[{MUTED}]latency[/] {self._plain_latency(selected)}",
             )
-            self._append_map_line(
-                graph,
-                f"       | type={selected.device_type:<8} risk={selected.risk_label:<8} latency={self._plain_latency(selected):<8} |",
-                self._risk_style(selected),
-            )
-            self._append_map_line(graph, "       '------------------------------------------------'", WARNING)
+            content.add_row(focus)
 
         return Panel(
-            graph,
-            title=f"[bold {ACCENT}]NetPulse Signal Map[/]",
-            subtitle=f"[{MUTED}]arrows/HJKL navigate nodes | R rescans | page follows selection | estimated graph[/]",
+            content,
+            title=f"[bold {ACCENT}]Network Overview[/] [{MUTED}]page {page}/{total_pages}[/]",
+            subtitle=f"[{MUTED}]gateway first, then attention | arrows/HJKL focus nodes | R refreshes[/]",
             border_style=ACCENT,
         )
 
@@ -325,7 +331,7 @@ class Dashboard:
         device = self.state.selected_device()
         if device is None:
             return Panel(
-                Align.center(Text("Seleziona un dispositivo", style="dim"), vertical="middle"),
+                Align.center(Text("Select a device", style="dim"), vertical="middle"),
                 title="Detail",
                 border_style=MUTED,
             )
@@ -439,35 +445,6 @@ class Dashboard:
         return WARNING
 
     @staticmethod
-    def _bar(count: int, width: int = 12) -> str:
-        filled = min(width, count)
-        return "[" + ("#" * filled).ljust(width, ".") + "]"
-
-    def _graph_device_lines(
-        self,
-        devices: list[Device],
-        prefix: str = "       |   ",
-        limit: int = 8,
-    ) -> list[str]:
-        lines: list[str] = []
-        for index, device in enumerate(devices[:limit]):
-            connector = "`--" if index == min(len(devices), limit) - 1 else "+--"
-            selected = ">" if device.id == self.state.selected_device_id else " "
-            status = "x" if not device.online else ("!" if device.risk_label in {"unknown", "watch"} else "-")
-            latency = self._plain_latency(device)
-            lines.append(
-                f"{prefix}{connector} {selected}{status} {device.ip:<15} {device.name} ({latency})"
-            )
-        remaining = len(devices) - limit
-        if remaining > 0:
-            lines.append(f"{prefix}`-- ... {remaining} more nodes")
-        return lines
-
-    @staticmethod
-    def _online_count(devices: list[Device]) -> int:
-        return sum(1 for device in devices if device.online)
-
-    @staticmethod
     def _plain_latency(device: Device) -> str:
         if not device.online:
             return "offline"
@@ -480,28 +457,15 @@ class Dashboard:
         text.append(line, style=style)
         text.append("\n")
 
-    def _append_group_nodes(
-        self,
-        graph: Text,
-        devices: list[Device],
-        prefix: str,
-        limit: int = 7,
-    ) -> None:
-        visible = devices[:limit]
-        for index, device in enumerate(visible):
-            connector = "`--" if index == len(visible) - 1 and len(devices) <= limit else "+--"
-            marker = ">" if device.id == self.state.selected_device_id else " "
-            signal = "x" if not device.online else ("!" if device.risk_label in {"unknown", "watch"} else "-")
-            line = (
-                f"{prefix}{connector} [{marker}{signal}] "
-                f"{device.ip:<15} {self._short_name(device):<22} "
-                f"{self._plain_latency(device):>7}"
-            )
-            graph.append(line, style=self._node_style(device))
-            graph.append("\n")
-        remaining = len(devices) - limit
-        if remaining > 0:
-            self._append_map_line(graph, f"{prefix}`-- [... ] {remaining} hidden nodes", MUTED)
+    def _map_brand(self) -> Text:
+        brand = Text(no_wrap=False, overflow="fold")
+        self._append_map_line(brand, "   _   _ _____ _____ ____  _   _ _     ____  _____", ACCENT)
+        self._append_map_line(brand, "  | \\ | | ____|_   _|  _ \\| | | | |   / ___|| ____|", ACCENT)
+        self._append_map_line(brand, "  |  \\| |  _|   | | | |_) | | | | |   \\___ \\|  _|", ACCENT)
+        self._append_map_line(brand, "  | |\\  | |___  | | |  __/| |_| | |___ ___) | |___", ACCENT)
+        self._append_map_line(brand, "  |_| \\_|_____| |_| |_|    \\___/|_____|____/|_____|", ACCENT)
+        brand.append("  local network memory and presence monitor", style=MUTED)
+        return brand
 
     @staticmethod
     def _short_name(device: Device, width: int = 22) -> str:
@@ -509,16 +473,6 @@ class Dashboard:
         if len(name) <= width:
             return name
         return name[: width - 1] + "~"
-
-    @staticmethod
-    def _group_style(label: str) -> str:
-        return {
-            "gateways": PULSE,
-            "storage": ACCENT,
-            "mobile": "#7df9ff",
-            "iot": WARNING,
-            "hosts": TEXT,
-        }.get(label, TEXT)
 
     def _node_style(self, device: Device) -> str:
         if not device.online:
@@ -537,29 +491,6 @@ class Dashboard:
         if len(single_line) <= width:
             return single_line
         return single_line[: max(0, width - 1)] + "~"
-
-    def _map_node_chip(self, device: Device) -> str:
-        marker = ">" if device.id == self.state.selected_device_id else " "
-        signal = "x" if not device.online else ("!" if device.risk_label in {"unknown", "watch"} else "-")
-        type_code = {
-            "gateway": "GW",
-            "storage": "ST",
-            "mobile": "MO",
-            "iot": "IO",
-            "host": "HO",
-        }.get(device.device_type, "??")
-        return f"[{marker}{signal}] {device.ip:<13} {type_code} {self._plain_latency(device):>4}"
-
-    def _map_distribution_line(self, devices: list[Device]) -> str:
-        counts = {
-            "GW": sum(1 for device in devices if device.device_type == "gateway"),
-            "ST": sum(1 for device in devices if device.device_type == "storage"),
-            "MO": sum(1 for device in devices if device.device_type == "mobile"),
-            "IO": sum(1 for device in devices if device.device_type == "iot"),
-            "HO": sum(1 for device in devices if device.device_type == "host"),
-        }
-        bars = "  ".join(f"{label}:{self._bar(count, width=8)} {count}" for label, count in counts.items())
-        return f"        distribution  {bars}"
 
     def _map_visible_devices(self, devices: list[Device], page_size: int) -> tuple[list[Device], int, int]:
         ordered = self._map_ordered_devices(devices)
@@ -582,11 +513,14 @@ class Dashboard:
                 "mobile": 3,
                 "iot": 4,
             }.get(device.device_type, 5)
-            risk_weight = 0 if device.risk_label == "trusted" else 1
-            if not device.online:
-                risk_weight = 3
-            elif device.risk_label == "watch":
+            if device.device_type == "gateway":
+                risk_weight = 0
+            elif device.risk_label in {"unknown", "watch"}:
+                risk_weight = 1
+            elif not device.online:
                 risk_weight = 2
+            else:
+                risk_weight = 3
             return (risk_weight, type_weight, device.ip)
 
         return sorted(devices, key=weight)

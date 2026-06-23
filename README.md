@@ -140,28 +140,17 @@ NetPulse enriches each device with local-only intelligence:
 
 The classification is conservative and local. It uses hostname hints, known OUI prefixes, MAC presence, and the estimated gateway.
 
-## Network Map
+## Network Overview
 
-The map is the visual centerpiece of NetPulse.
+The map view is a clean operational overview rather than a physical topology. It shows:
 
-It is not meant to be a perfect physical topology. Instead, it creates an estimated signal map from the scan data:
-
-- WAN/uplink;
+- the NetPulse ASCII header;
 - detected or estimated gateway;
-- NetPulse LAN core;
-- left/right clusters;
-- node chips with status markers;
-- distribution bars by device type;
-- selected node focus.
+- online, attention, offline, and trusted counts;
+- devices ordered by what needs attention first;
+- selected-node focus.
 
-Markers:
-
-- `>` selected node;
-- `!` unknown/watch node;
-- `x` offline node;
-- `-` trusted/normal node.
-
-The map order is weighted to surface infrastructure and trusted devices first, then unknown/watch devices, then offline devices. The visible page follows the selected node.
+This view is designed for quick interpretation: use it to spot unknown/watch devices, high-level network state, and the currently focused node without reading the full device table.
 
 ## Network Memory
 

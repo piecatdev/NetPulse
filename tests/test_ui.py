@@ -7,6 +7,7 @@ from pathlib import Path
 from rich.console import Console
 
 from netpulse.memory import DriftFinding, NetworkMemory
+from netpulse.models import ScanResult
 from netpulse.persistence import DeviceRegistry
 from netpulse.state import NetworkState
 from netpulse.ui import Dashboard
@@ -35,6 +36,28 @@ class DashboardRenderingTests(unittest.TestCase):
         self.assertIn("Network Memory", output)
         self.assertIn("06 Finding 5", output)
         self.assertNotIn("01 Finding 0", output)
+
+    def test_map_view_renders_clean_network_overview(self) -> None:
+        state = NetworkState(DeviceRegistry(Path("unused.json")), gateway_ip="192.168.1.1")
+        state.view_mode = "map"
+        state.apply_scan_results(
+            [
+                ScanResult("192.168.1.1", "00:1a:2b:10:00:01", 4.0, "Gateway"),
+                ScanResult("192.168.1.24", "00:11:32:10:00:24", 12.0, "NAS"),
+                ScanResult("192.168.1.88", "", None, "Mystery Host"),
+            ]
+        )
+
+        console = Console(file=io.StringIO(), record=True, width=120, height=36)
+        console.print(Dashboard(state).render())
+        output = console.export_text(styles=False)
+
+        self.assertIn("Network Overview", output)
+        self.assertIn("gateway", output)
+        self.assertIn("attention", output)
+        self.assertIn("Mystery Host", output)
+        self.assertNotIn("WAN", output)
+        self.assertNotIn("NETPULSE CORE", output)
 
 
 if __name__ == "__main__":

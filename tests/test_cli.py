@@ -136,6 +136,7 @@ class CliParserTests(unittest.TestCase):
 
         text = output.getvalue()
         self.assertIn("NetPulse memory", text)
+        self.assertIn("Network status:", text)
         self.assertIn("Workstation", text)
         self.assertIn("Latency signals", text)
 
