@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import contextlib
 import io
+import tempfile
 import unittest
+from argparse import Namespace
+from pathlib import Path
 
-from netpulse.cli import _memory_scroll_offset, build_parser
+from rich.console import Console
+
+from netpulse.cli import _memory_scroll_offset, build_parser, run_history_command
+from netpulse.models import Device, NetworkEvent
+from netpulse.storage import HistoryStore
 
 
 class CliParserTests(unittest.TestCase):
@@ -58,6 +65,14 @@ class CliParserTests(unittest.TestCase):
         self.assertTrue(args.demo)
         self.assertEqual(args.demo_view, "map")
 
+    def test_accepts_demo_without_cidr(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["--demo"])
+
+        self.assertTrue(args.demo)
+        self.assertIsNone(args.cidr)
+
     def test_accepts_demo_view(self) -> None:
         parser = build_parser()
 
@@ -70,6 +85,84 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(_memory_scroll_offset("down"), 1)
         self.assertEqual(_memory_scroll_offset("left"), -7)
         self.assertEqual(_memory_scroll_offset("right"), 7)
+
+    def test_accepts_memory_without_cidr(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["--memory"])
+
+        self.assertTrue(args.memory)
+        self.assertIsNone(args.cidr)
+
+    def test_memory_command_prints_remembered_devices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history_path = Path(directory) / "history.db"
+            store = HistoryStore(history_path)
+            store.connect()
+            try:
+                device = Device(
+                    ip="192.168.1.20",
+                    mac="aa:bb:cc:dd:ee:20",
+                    name="Workstation",
+                    known=True,
+                    latency_ms=42.0,
+                )
+                store.record_snapshot([device])
+                store.record_event(NetworkEvent(device.last_seen, "Node Workstation connected", "success"), device.id)
+            finally:
+                store.close()
+
+            output = io.StringIO()
+            console = Console(file=output, force_terminal=False, width=120)
+            run_history_command(
+                console,
+                Namespace(
+                    history=history_path,
+                    retention_days=0,
+                    memory=True,
+                    timeline=None,
+                    history_limit=10,
+                ),
+            )
+
+        text = output.getvalue()
+        self.assertIn("NetPulse memory", text)
+        self.assertIn("Workstation", text)
+        self.assertIn("Latency signals", text)
+
+    def test_timeline_command_matches_device_by_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history_path = Path(directory) / "history.db"
+            store = HistoryStore(history_path)
+            store.connect()
+            try:
+                device = Device(
+                    ip="192.168.1.30",
+                    mac="aa:bb:cc:dd:ee:30",
+                    name="NAS",
+                    known=True,
+                )
+                store.record_snapshot([device])
+                store.record_event(NetworkEvent(device.last_seen, "Node NAS connected", "success"), device.id)
+            finally:
+                store.close()
+
+            output = io.StringIO()
+            console = Console(file=output, force_terminal=False, width=120)
+            run_history_command(
+                console,
+                Namespace(
+                    history=history_path,
+                    retention_days=0,
+                    memory=False,
+                    timeline="192.168.1.30",
+                    history_limit=10,
+                ),
+            )
+
+        text = output.getvalue()
+        self.assertIn("NetPulse timeline", text)
+        self.assertIn("Node NAS connected", text)
 
 
 if __name__ == "__main__":

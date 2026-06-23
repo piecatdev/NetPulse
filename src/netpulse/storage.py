@@ -100,6 +100,43 @@ class HistoryStore:
         ).fetchall()
         return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
+    def recent_events(self, limit: int = 10) -> list[tuple[str, str, str, str]]:
+        rows = self._conn().execute(
+            """
+            SELECT captured_at, COALESCE(device_id, ''), level, message
+            FROM events
+            ORDER BY captured_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+
+    def latency_summary(self, limit: int = 10) -> list[tuple[str, int, float | None, float | None]]:
+        rows = self._conn().execute(
+            """
+            SELECT device_id,
+                   COUNT(latency_ms) AS samples,
+                   AVG(latency_ms) AS avg_latency,
+                   MAX(latency_ms) AS max_latency
+            FROM metrics
+            WHERE latency_ms IS NOT NULL
+            GROUP BY device_id
+            ORDER BY avg_latency DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            (
+                str(row[0]),
+                int(row[1] or 0),
+                float(row[2]) if row[2] is not None else None,
+                float(row[3]) if row[3] is not None else None,
+            )
+            for row in rows
+        ]
+
     def device_records(self) -> list[DeviceMemoryRecord]:
         rows = self._conn().execute(
             """

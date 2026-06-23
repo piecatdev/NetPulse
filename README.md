@@ -211,6 +211,25 @@ history on startup, set a retention window:
 netpulse 192.168.1.0/24 --watch --retention-days 30
 ```
 
+You can inspect remembered history without starting a scan:
+
+```powershell
+netpulse --memory
+```
+
+Show a device timeline by MAC, IP, remembered id, or name:
+
+```powershell
+netpulse --timeline 192.168.1.24
+netpulse --timeline "NAS Vault"
+```
+
+Limit report rows when you want a shorter view:
+
+```powershell
+netpulse --memory --history-limit 5
+```
+
 ## Friendly Names
 
 NetPulse uses `devices.json` to associate friendly names with MAC addresses:

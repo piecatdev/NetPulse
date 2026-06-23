@@ -11,6 +11,7 @@ from rich.table import Table
 
 from .demo import demo_registry, demo_scan_results
 from .input import KeyboardInput, LineKeyboardInput
+from .memory import DeviceMemoryRecord
 from .network import NetworkEngine
 from .persistence import DeviceRegistry, RegistryError
 from .state import NetworkState
@@ -23,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="netpulse",
         description="Monitor device presence and latency on a local network.",
     )
-    parser.add_argument("cidr", help="Network to scan, e.g. 192.168.1.0/24")
+    parser.add_argument("cidr", nargs="?", help="Network to scan, e.g. 192.168.1.0/24")
     parser.add_argument("--interval", type=_positive_float, default=5.0, help="Seconds between scans in --watch mode")
     parser.add_argument("--timeout", type=_positive_float, default=1.0, help="Ping timeout per host")
     parser.add_argument("--concurrency", type=_positive_int, default=64, help="Concurrent ping probes")
@@ -57,6 +58,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Run one scan and print results without the live dashboard",
+    )
+    parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="Show remembered devices and recent history without scanning",
+    )
+    parser.add_argument(
+        "--timeline",
+        metavar="DEVICE",
+        help="Show recent events for a remembered device by MAC, IP, id, or name",
+    )
+    parser.add_argument(
+        "--history-limit",
+        type=_positive_int,
+        default=10,
+        help="Rows to show for --memory and --timeline",
     )
     parser.add_argument(
         "--diag",
@@ -116,6 +133,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run(args: argparse.Namespace) -> None:
     console = Console()
+
+    if _history_command_requested(args):
+        run_history_command(console, args)
+        return
 
     if args.demo:
         state = NetworkState(demo_registry(), gateway_ip="192.168.1.1")
@@ -249,6 +270,155 @@ async def run_demo(
             await _cancel_dashboard_tasks(input_task)
     except KeyboardInterrupt:
         console.print("\n[bold yellow]NetPulse demo closed[/]")
+
+
+def run_history_command(console: Console, args: argparse.Namespace) -> None:
+    history = HistoryStore(args.history, retention_days=args.retention_days)
+    history.connect()
+    try:
+        records = history.device_records()
+        if args.timeline:
+            _print_device_timeline(console, history, records, args.timeline, args.history_limit)
+            return
+        _print_memory_report(console, history, records, args.history_limit)
+    finally:
+        history.close()
+
+
+def _print_memory_report(
+    console: Console,
+    history: HistoryStore,
+    records: list[DeviceMemoryRecord],
+    limit: int,
+) -> None:
+    known = sum(1 for record in records if record.known)
+    unknown = len(records) - known
+    console.print(
+        f"[bold cyan]NetPulse memory[/] devices={len(records)} "
+        f"known={known} unknown={unknown}"
+    )
+
+    devices = Table(title="Remembered devices")
+    devices.add_column("Device", no_wrap=True, overflow="ellipsis")
+    devices.add_column("IP", no_wrap=True)
+    devices.add_column("Type", no_wrap=True)
+    devices.add_column("Risk", no_wrap=True)
+    devices.add_column("Last seen", no_wrap=True)
+
+    for record in records[:limit]:
+        devices.add_row(
+            _clip_plain(record.name, 22),
+            record.ip or "n/d",
+            record.device_type,
+            record.risk_label,
+            _short_time(record.last_seen),
+        )
+    if not records:
+        devices.add_row("No remembered devices", "", "", "", "")
+    console.print(devices)
+
+    latency_rows = history.latency_summary(limit=limit)
+    if latency_rows:
+        names_by_id = {record.device_id: record.name for record in records}
+        latency = Table(title="Latency signals")
+        latency.add_column("Device", no_wrap=True, overflow="ellipsis")
+        latency.add_column("Samples", justify="right")
+        latency.add_column("Average", justify="right")
+        latency.add_column("Peak", justify="right")
+        for device_id, samples, average, peak in latency_rows:
+            latency.add_row(
+                _clip_plain(names_by_id.get(device_id, device_id), 28),
+                str(samples),
+                _latency_value(average),
+                _latency_value(peak),
+            )
+        console.print(latency)
+
+    events = history.recent_events(limit=limit)
+    event_table = Table(title="Recent events")
+    event_table.add_column("Time", no_wrap=True)
+    event_table.add_column("Level", no_wrap=True)
+    event_table.add_column("Event", overflow="ellipsis")
+    for captured_at, _device_id, level, message in events:
+        event_table.add_row(_short_time(captured_at), level, _clip_plain(message, 72))
+    if not events:
+        event_table.add_row("n/d", "info", "No events recorded yet")
+    console.print(event_table)
+
+
+def _print_device_timeline(
+    console: Console,
+    history: HistoryStore,
+    records: list[DeviceMemoryRecord],
+    query: str,
+    limit: int,
+) -> None:
+    record = _find_memory_record(records, query)
+    if record is None:
+        console.print(f"[bold red]No remembered device matches:[/] {query}")
+        console.print("Use [bold]netpulse --memory[/] to see remembered devices.")
+        return
+
+    console.print(
+        f"[bold cyan]NetPulse timeline[/] {record.name} "
+        f"[dim]{record.ip} {record.mac or 'unknown'}[/]"
+    )
+    table = Table(title="Recent device events")
+    table.add_column("Time", no_wrap=True)
+    table.add_column("Level", no_wrap=True)
+    table.add_column("Event", overflow="ellipsis")
+    rows = history.timeline(record.device_id, limit=limit)
+    for captured_at, level, message in rows:
+        table.add_row(_short_time(captured_at), level, _clip_plain(message, 72))
+    if not rows:
+        table.add_row("n/d", "info", "No events recorded for this device")
+    console.print(table)
+
+
+def _find_memory_record(records: list[DeviceMemoryRecord], query: str) -> DeviceMemoryRecord | None:
+    needle = query.strip().lower().replace("-", ":")
+    for record in records:
+        candidates = {
+            record.device_id.lower(),
+            record.mac.lower(),
+            record.ip.lower(),
+            record.name.lower(),
+        }
+        if needle in candidates:
+            return record
+    for record in records:
+        if needle and needle in record.name.lower():
+            return record
+    return None
+
+
+def _short_time(value: str) -> str:
+    if not value:
+        return "n/d"
+    if "T" in value:
+        value = value.replace("T", " ")
+    return value[:16]
+
+
+def _latency_value(value: float | None) -> str:
+    if value is None:
+        return "n/d"
+    return f"{value:.0f} ms"
+
+
+def _clip_plain(value: str, width: int) -> str:
+    single_line = value.replace("\n", " ")
+    if len(single_line) <= width:
+        return single_line
+    return single_line[: max(0, width - 1)] + "~"
+
+
+def _history_command_requested(args: argparse.Namespace) -> bool:
+    return bool(args.memory or args.timeline)
+
+
+def _cidr_not_required(args: argparse.Namespace) -> bool:
+    return bool(args.demo or _history_command_requested(args))
 
 
 async def run_once(
@@ -507,8 +677,11 @@ def _non_negative_int(value: str) -> int:
 
 def main() -> None:
     parser = build_parser()
+    args = parser.parse_args()
+    if args.cidr is None and not _cidr_not_required(args):
+        parser.error("cidr is required unless --demo, --memory, or --timeline is used")
     try:
-        asyncio.run(run(parser.parse_args()))
+        asyncio.run(run(args))
     except KeyboardInterrupt:
         print("\nNetPulse interrupted by user")
 
