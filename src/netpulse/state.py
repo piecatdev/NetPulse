@@ -4,6 +4,7 @@ from collections import deque
 from datetime import datetime
 
 from .intelligence import DeviceIntelligence
+from .memory import NetworkMemory, NetworkMemoryAnalyzer
 from .models import Device, NetworkEvent, ScanResult
 from .persistence import DeviceRegistry
 from .storage import HistoryStore
@@ -22,6 +23,7 @@ class NetworkState:
         self.history = history
         self.gateway_ip = gateway_ip
         self.intelligence = DeviceIntelligence()
+        self.memory_analyzer = NetworkMemoryAnalyzer()
         self.devices: dict[str, Device] = {}
         self.events: deque[NetworkEvent] = deque(maxlen=max_events)
         self.event_timeline_by_device: dict[str, deque[tuple[str, str, str]]] = {}
@@ -33,12 +35,27 @@ class NetworkState:
         self.last_scan_count = 0
         self.last_action = "ready"
         self.persistence_error: str | None = None
+        self.memory_scroll_offset = 0
+        self.network_memory = NetworkMemory(
+            health_score=100,
+            trust_score=100,
+            drift_label="learning",
+            summary="Waiting for first scan",
+            findings=(),
+        )
         self._alerted_unknown_ids: set[str] = set()
         self._alerted_latency_ids: set[str] = set()
 
     def apply_scan_results(self, results: list[ScanResult]) -> None:
         now = datetime.now()
         seen_ids: set[str] = set()
+        prior_records = []
+        if self.history is not None:
+            try:
+                prior_records = self.history.device_records()
+                self.persistence_error = None
+            except Exception as exc:
+                self.persistence_error = str(exc)
 
         for result in results:
             device_id = result.mac.lower() if result.mac else result.ip
@@ -113,6 +130,14 @@ class NetworkState:
         self.last_scan_at = now
         self.last_scan_count = len(results)
         self._ensure_selection()
+        self.network_memory = self.memory_analyzer.analyze(
+            prior_records,
+            self.sorted_devices(),
+            seen_ids,
+        )
+        self._clamp_memory_scroll()
+        if self.network_memory.drift_label in {"medium", "high"}:
+            self.add_event(f"Network drift: {self.network_memory.summary}", "warning")
         if self.history is not None:
             try:
                 self.history.record_snapshot(self.devices.values())
@@ -174,12 +199,37 @@ class NetworkState:
             self.last_action = f"focus {selected.ip}"
             self.add_event(f"Focus: {selected.name} ({selected.ip})", "info", selected.id)
 
+    def scroll_memory(self, offset: int, page_size: int = 7) -> None:
+        findings_count = len(self.network_memory.findings)
+        if findings_count <= page_size:
+            self.memory_scroll_offset = 0
+            self.last_action = "memory top"
+            return
+        maximum = max(0, findings_count - page_size)
+        self.memory_scroll_offset = max(0, min(maximum, self.memory_scroll_offset + offset))
+        self.last_action = f"memory {self.memory_scroll_offset + 1}/{findings_count}"
+
+    def visible_memory_findings(self, page_size: int = 7):
+        findings = list(self.network_memory.findings)
+        if not findings:
+            return [], 0, 0
+        self._clamp_memory_scroll(page_size)
+        start = self.memory_scroll_offset
+        end = start + page_size
+        total_pages = (len(findings) + page_size - 1) // page_size
+        page = min(total_pages, (start + page_size - 1) // page_size + 1)
+        return findings[start:end], page, total_pages
+
     def cycle_view(self) -> None:
-        modes = ["table", "map", "cards"]
+        modes = ["table", "map", "memory", "cards"]
         current = modes.index(self.view_mode) if self.view_mode in modes else 0
         self.view_mode = modes[(current + 1) % len(modes)]
         self.last_action = f"view {self.view_mode}"
         self.add_event(f"Vista: {self.view_mode}", "info")
+
+    def _clamp_memory_scroll(self, page_size: int = 7) -> None:
+        maximum = max(0, len(self.network_memory.findings) - page_size)
+        self.memory_scroll_offset = max(0, min(maximum, self.memory_scroll_offset))
 
     def selected_timeline(self, limit: int = 6) -> list[tuple[str, str, str]]:
         device = self.selected_device()

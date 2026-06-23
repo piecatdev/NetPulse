@@ -4,7 +4,7 @@ import contextlib
 import io
 import unittest
 
-from netpulse.cli import build_parser
+from netpulse.cli import _memory_scroll_offset, build_parser
 
 
 class CliParserTests(unittest.TestCase):
@@ -61,9 +61,15 @@ class CliParserTests(unittest.TestCase):
     def test_accepts_demo_view(self) -> None:
         parser = build_parser()
 
-        args = parser.parse_args(["192.168.1.0/24", "--demo", "--demo-view", "cards"])
+        args = parser.parse_args(["192.168.1.0/24", "--demo", "--demo-view", "memory"])
 
-        self.assertEqual(args.demo_view, "cards")
+        self.assertEqual(args.demo_view, "memory")
+
+    def test_memory_scroll_offsets(self) -> None:
+        self.assertEqual(_memory_scroll_offset("up"), -1)
+        self.assertEqual(_memory_scroll_offset("down"), 1)
+        self.assertEqual(_memory_scroll_offset("left"), -7)
+        self.assertEqual(_memory_scroll_offset("right"), 7)
 
 
 if __name__ == "__main__":

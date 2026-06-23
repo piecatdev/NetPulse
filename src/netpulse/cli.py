@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--demo-view",
-        choices=["table", "map", "cards"],
+        choices=["table", "map", "memory", "cards"],
         default="map",
         help="Initial dashboard view for --demo mode",
     )
@@ -425,7 +425,10 @@ async def _input_loop(
         elif action.name == "view":
             state.cycle_view()
         elif action.name in {"left", "right", "up", "down"}:
-            state.move_selection(_selection_offset(state.view_mode, action.name))
+            if state.view_mode == "memory":
+                state.scroll_memory(_memory_scroll_offset(action.name))
+            else:
+                state.move_selection(_selection_offset(state.view_mode, action.name))
         if live is not None:
             live.refresh()
 
@@ -450,6 +453,15 @@ def _selection_offset(view_mode: str, action_name: str) -> int:
         "down": 1,
         "left": -6,
         "right": 6,
+    }[action_name]
+
+
+def _memory_scroll_offset(action_name: str) -> int:
+    return {
+        "up": -1,
+        "down": 1,
+        "left": -7,
+        "right": 7,
     }[action_name]
 
 

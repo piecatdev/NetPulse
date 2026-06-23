@@ -91,6 +91,8 @@ class Dashboard:
             return self._render_network_map()
         if self.state.view_mode == "table":
             return self._render_device_table()
+        if self.state.view_mode == "memory":
+            return self._render_network_memory()
         return self._render_devices()
 
     def _render_devices(self) -> Panel:
@@ -154,6 +156,65 @@ class Dashboard:
             table,
             title=f"[bold {ACCENT}]Signal Table[/] [{MUTED}]{page}/{total_pages} ({total} total)[/]",
             border_style=ACCENT,
+        )
+
+    def _render_network_memory(self) -> Panel:
+        memory = self.state.network_memory
+        table = Table.grid(expand=True)
+        table.add_column(ratio=1)
+        table.add_column(ratio=1)
+        table.add_column(ratio=1)
+
+        health_style = self._score_style(memory.health_score)
+        trust_style = self._score_style(memory.trust_score)
+        drift_style = {
+            "stable": PULSE,
+            "learning": ACCENT,
+            "low": ACCENT,
+            "medium": WARNING,
+            "high": DANGER,
+        }.get(memory.drift_label, TEXT)
+
+        table.add_row(
+            f"[bold {health_style}]HEALTH {memory.health_score:>3}/100[/]",
+            f"[bold {trust_style}]TRUST {memory.trust_score:>3}/100[/]",
+            f"[bold {drift_style}]DRIFT {memory.drift_label.upper()}[/]",
+        )
+        table.add_row("", "", "")
+        table.add_row(f"[{TEXT}]{memory.summary}[/]", "", "")
+        table.add_row("", "", "")
+
+        findings = Table(expand=True)
+        findings.add_column("Severity", width=9)
+        findings.add_column("Signal", width=18)
+        findings.add_column("Detail")
+
+        visible_findings, page, total_pages = self.state.visible_memory_findings(page_size=7)
+
+        if visible_findings:
+            for index, finding in enumerate(visible_findings, start=self.state.memory_scroll_offset + 1):
+                style = {
+                    "warning": WARNING,
+                    "error": DANGER,
+                    "info": ACCENT,
+                }.get(finding.severity, TEXT)
+                findings.add_row(
+                    f"[{style}]{finding.severity.upper()}[/]",
+                    f"{index:02d} {finding.title}",
+                    Text(self._clip(finding.detail, 82), style=TEXT, overflow="ellipsis"),
+                )
+        else:
+            findings.add_row(f"[{PULSE}]OK[/]", "Stable baseline", "No remembered drift detected")
+
+        content = Table.grid(expand=True)
+        content.add_row(table)
+        content.add_row(findings)
+
+        return Panel(
+            content,
+            title=f"[bold {ACCENT}]Network Memory[/]",
+            subtitle=f"[{MUTED}]up/down scroll findings | page {page}/{total_pages} | local baseline comparison[/]",
+            border_style=drift_style,
         )
 
     def _render_network_map(self) -> Panel:
@@ -360,6 +421,14 @@ class Dashboard:
         if self.line_input:
             return "commands + Enter: j/k navigate | v view | r refresh | q quit"
         return "Arrows/HJKL navigate | V view | R refresh | Q quit"
+
+    @staticmethod
+    def _score_style(score: int) -> str:
+        if score >= 85:
+            return PULSE
+        if score >= 65:
+            return WARNING
+        return DANGER
 
     @staticmethod
     def _risk_style(device: Device) -> str:

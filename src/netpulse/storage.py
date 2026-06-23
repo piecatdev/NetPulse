@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .memory import DeviceMemoryRecord
 from .models import Device, NetworkEvent
 
 
@@ -98,6 +99,31 @@ class HistoryStore:
             (device_id, f"%{device_id}%", limit),
         ).fetchall()
         return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+    def device_records(self) -> list[DeviceMemoryRecord]:
+        rows = self._conn().execute(
+            """
+            SELECT device_id, mac, ip, name, vendor, device_type, risk_label,
+                   first_seen, last_seen, known
+            FROM devices
+            ORDER BY last_seen DESC, name ASC
+            """
+        ).fetchall()
+        return [
+            DeviceMemoryRecord(
+                device_id=str(row[0]),
+                mac=str(row[1] or ""),
+                ip=str(row[2] or ""),
+                name=str(row[3] or "Unknown device"),
+                vendor=str(row[4] or "Unknown vendor"),
+                device_type=str(row[5] or "host"),
+                risk_label=str(row[6] or "unknown"),
+                first_seen=str(row[7] or ""),
+                last_seen=str(row[8] or ""),
+                known=bool(row[9]),
+            )
+            for row in rows
+        ]
 
     def prune_history(self) -> None:
         if self.retention_days <= 0:

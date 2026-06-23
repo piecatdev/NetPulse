@@ -14,6 +14,7 @@ NetPulse is a Python CLI/TUI for discovering, inspecting, and visualizing device
 - ARP-first discovery with optional deep subnet scans.
 - Interactive Rich dashboard with table, card, and signal-map views.
 - Local-only device intelligence for vendor, type, risk, and known-device status.
+- Network Memory compares each scan against remembered devices and surfaces drift.
 - SQLite history for snapshots, latency metrics, events, alerts, and timelines.
 - Screenshot-safe demo mode with synthetic devices and no real network scan.
 
@@ -107,13 +108,14 @@ The dashboard includes:
 - a compact device table;
 - device cards;
 - an estimated ASCII-art network map;
+- a Network Memory view for baseline drift and health/trust scoring;
 - a selected-node detail panel;
 - a fixed-height signal log.
 
 Interactive controls:
 
 - `Arrows` or `H/J/K/L`: move the selected device;
-- `V`: switch between table, map, and cards;
+- `V`: switch between table, map, Network Memory, and cards;
 - `R`: run a manual refresh;
 - `Q`: quit.
 
@@ -160,6 +162,20 @@ Markers:
 - `-` trusted/normal node.
 
 The map order is weighted to surface infrastructure and trusted devices first, then unknown/watch devices, then offline devices. The visible page follows the selected node.
+
+## Network Memory
+
+NetPulse remembers devices through its local SQLite history and compares each new scan against that memory. The `memory` dashboard view summarizes:
+
+- network health score;
+- trust score;
+- drift level: `stable`, `low`, `medium`, or `high`;
+- new devices;
+- missing remembered devices;
+- IP changes;
+- known-profile or type drift.
+
+This turns NetPulse from a point-in-time scanner into a local-first network memory tool. The comparison is fully local and uses only the stored history database.
 
 ## Visual Identity
 

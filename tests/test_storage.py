@@ -32,6 +32,27 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(timeline[0][1], "success")
         self.assertIn("Workstation", timeline[0][2])
 
+    def test_returns_device_memory_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = HistoryStore(Path(directory) / "history.db")
+            store.connect()
+            try:
+                device = Device(
+                    ip="192.168.1.20",
+                    mac="aa:bb:cc:dd:ee:20",
+                    name="Workstation",
+                    known=True,
+                )
+                store.record_snapshot([device])
+
+                records = store.device_records()
+            finally:
+                store.close()
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].device_id, device.id)
+        self.assertTrue(records[0].known)
+
     def test_prunes_metrics_and_events_older_than_retention(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = HistoryStore(Path(directory) / "history.db", retention_days=7)
