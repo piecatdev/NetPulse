@@ -230,6 +230,25 @@ Limit report rows when you want a shorter view:
 netpulse --memory --history-limit 5
 ```
 
+After reviewing remembered devices, save an approved baseline:
+
+```powershell
+netpulse --baseline save
+```
+
+Compare current memory against that approved baseline:
+
+```powershell
+netpulse --baseline diff
+```
+
+You can also inspect or clear the approved baseline:
+
+```powershell
+netpulse --baseline show
+netpulse --baseline reset
+```
+
 ## Friendly Names
 
 NetPulse uses `devices.json` to associate friendly names with MAC addresses:

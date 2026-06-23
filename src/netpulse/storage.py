@@ -137,6 +137,62 @@ class HistoryStore:
             for row in rows
         ]
 
+    def save_baseline(self, records: Iterable[DeviceMemoryRecord]) -> int:
+        conn = self._conn()
+        approved_at = datetime.now().isoformat(timespec="seconds")
+        rows = list(records)
+        with conn:
+            conn.execute("DELETE FROM baseline_devices")
+            for record in rows:
+                conn.execute(
+                    """
+                    INSERT INTO baseline_devices (
+                        device_id, mac, ip, name, vendor, device_type,
+                        risk_label, first_seen, last_seen, known, approved_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.device_id,
+                        record.mac,
+                        record.ip,
+                        record.name,
+                        record.vendor,
+                        record.device_type,
+                        record.risk_label,
+                        record.first_seen,
+                        record.last_seen,
+                        int(record.known),
+                        approved_at,
+                    ),
+                )
+        return len(rows)
+
+    def baseline_records(self) -> list[DeviceMemoryRecord]:
+        rows = self._conn().execute(
+            """
+            SELECT device_id, mac, ip, name, vendor, device_type, risk_label,
+                   first_seen, last_seen, known
+            FROM baseline_devices
+            ORDER BY name ASC, ip ASC
+            """
+        ).fetchall()
+        return [self._device_memory_record(row) for row in rows]
+
+    def baseline_saved_at(self) -> str | None:
+        row = self._conn().execute(
+            "SELECT MAX(approved_at) FROM baseline_devices"
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return str(row[0])
+
+    def clear_baseline(self) -> int:
+        conn = self._conn()
+        with conn:
+            cursor = conn.execute("DELETE FROM baseline_devices")
+        return int(cursor.rowcount)
+
     def device_records(self) -> list[DeviceMemoryRecord]:
         rows = self._conn().execute(
             """
@@ -146,21 +202,7 @@ class HistoryStore:
             ORDER BY last_seen DESC, name ASC
             """
         ).fetchall()
-        return [
-            DeviceMemoryRecord(
-                device_id=str(row[0]),
-                mac=str(row[1] or ""),
-                ip=str(row[2] or ""),
-                name=str(row[3] or "Unknown device"),
-                vendor=str(row[4] or "Unknown vendor"),
-                device_type=str(row[5] or "host"),
-                risk_label=str(row[6] or "unknown"),
-                first_seen=str(row[7] or ""),
-                last_seen=str(row[8] or ""),
-                known=bool(row[9]),
-            )
-            for row in rows
-        ]
+        return [self._device_memory_record(row) for row in rows]
 
     def prune_history(self) -> None:
         if self.retention_days <= 0:
@@ -208,6 +250,20 @@ class HistoryStore:
                 ON metrics(device_id, captured_at);
             CREATE INDEX IF NOT EXISTS idx_events_device_time
                 ON events(device_id, captured_at);
+
+            CREATE TABLE IF NOT EXISTS baseline_devices (
+                device_id TEXT PRIMARY KEY,
+                mac TEXT,
+                ip TEXT,
+                name TEXT,
+                vendor TEXT,
+                device_type TEXT,
+                risk_label TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
+                known INTEGER,
+                approved_at TEXT NOT NULL
+            );
             """
         )
         conn.commit()
@@ -216,3 +272,18 @@ class HistoryStore:
         if self.connection is None:
             raise RuntimeError("HistoryStore is not connected")
         return self.connection
+
+    @staticmethod
+    def _device_memory_record(row: sqlite3.Row | tuple) -> DeviceMemoryRecord:
+        return DeviceMemoryRecord(
+            device_id=str(row[0]),
+            mac=str(row[1] or ""),
+            ip=str(row[2] or ""),
+            name=str(row[3] or "Unknown device"),
+            vendor=str(row[4] or "Unknown vendor"),
+            device_type=str(row[5] or "host"),
+            risk_label=str(row[6] or "unknown"),
+            first_seen=str(row[7] or ""),
+            last_seen=str(row[8] or ""),
+            known=bool(row[9]),
+        )

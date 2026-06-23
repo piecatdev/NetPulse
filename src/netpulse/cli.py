@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show recent events for a remembered device by MAC, IP, id, or name",
     )
     parser.add_argument(
+        "--baseline",
+        choices=["show", "save", "diff", "reset"],
+        help="Manage the approved remembered network baseline",
+    )
+    parser.add_argument(
         "--history-limit",
         type=_positive_int,
         default=10,
@@ -277,12 +282,127 @@ def run_history_command(console: Console, args: argparse.Namespace) -> None:
     history.connect()
     try:
         records = history.device_records()
+        baseline_action = getattr(args, "baseline", None)
+        if baseline_action:
+            _run_baseline_command(console, history, records, baseline_action, args.history_limit)
+            return
         if args.timeline:
             _print_device_timeline(console, history, records, args.timeline, args.history_limit)
             return
         _print_memory_report(console, history, records, args.history_limit)
     finally:
         history.close()
+
+
+def _run_baseline_command(
+    console: Console,
+    history: HistoryStore,
+    records: list[DeviceMemoryRecord],
+    action: str,
+    limit: int,
+) -> None:
+    if action == "save":
+        saved = history.save_baseline(records)
+        console.print(f"[bold green]Baseline saved[/] devices={saved}")
+        if saved == 0:
+            console.print("Run a scan first so NetPulse has devices to approve.")
+        return
+    if action == "reset":
+        removed = history.clear_baseline()
+        console.print(f"[bold yellow]Baseline reset[/] removed={removed}")
+        return
+    if action == "show":
+        _print_baseline(console, history.baseline_records(), history.baseline_saved_at(), limit)
+        return
+    _print_baseline_diff(
+        console,
+        baseline=history.baseline_records(),
+        current=records,
+        saved_at=history.baseline_saved_at(),
+        limit=limit,
+    )
+
+
+def _print_baseline(
+    console: Console,
+    baseline: list[DeviceMemoryRecord],
+    saved_at: str | None,
+    limit: int,
+) -> None:
+    console.print(
+        f"[bold cyan]NetPulse baseline[/] devices={len(baseline)} "
+        f"saved={_short_time(saved_at or '')}"
+    )
+    table = Table(title="Approved devices")
+    table.add_column("Device", no_wrap=True, overflow="ellipsis")
+    table.add_column("IP", no_wrap=True)
+    table.add_column("Type", no_wrap=True)
+    table.add_column("Risk", no_wrap=True)
+    for record in baseline[:limit]:
+        table.add_row(
+            _clip_plain(record.name, 22),
+            record.ip or "n/d",
+            record.device_type,
+            record.risk_label,
+        )
+    if not baseline:
+        table.add_row("No approved baseline", "", "", "")
+    console.print(table)
+
+
+def _print_baseline_diff(
+    console: Console,
+    *,
+    baseline: list[DeviceMemoryRecord],
+    current: list[DeviceMemoryRecord],
+    saved_at: str | None,
+    limit: int,
+) -> None:
+    findings = _baseline_findings(baseline, current)
+    status = "matches" if not findings and baseline else "needs review"
+    console.print(
+        f"[bold cyan]NetPulse baseline diff[/] status={status} "
+        f"baseline={len(baseline)} current={len(current)} saved={_short_time(saved_at or '')}"
+    )
+
+    table = Table(title="Baseline changes")
+    table.add_column("Change", no_wrap=True)
+    table.add_column("Device", no_wrap=True, overflow="ellipsis")
+    table.add_column("Detail", overflow="ellipsis")
+    for change, device, detail in findings[:limit]:
+        table.add_row(change, _clip_plain(device, 24), _clip_plain(detail, 76))
+    if not baseline:
+        table.add_row("setup", "No baseline", "Run netpulse --baseline save after reviewing --memory")
+    elif not findings:
+        table.add_row("ok", "Baseline", "Current memory matches approved devices")
+    console.print(table)
+
+
+def _baseline_findings(
+    baseline: list[DeviceMemoryRecord],
+    current: list[DeviceMemoryRecord],
+) -> list[tuple[str, str, str]]:
+    baseline_by_id = {record.device_id: record for record in baseline}
+    current_by_id = {record.device_id: record for record in current}
+    findings: list[tuple[str, str, str]] = []
+
+    for record in current:
+        approved = baseline_by_id.get(record.device_id)
+        if approved is None:
+            findings.append(("new", record.name, f"{record.ip} {record.device_type} {record.risk_label}"))
+            continue
+        if approved.ip != record.ip:
+            findings.append(("ip", record.name, f"{approved.ip or 'n/d'} -> {record.ip or 'n/d'}"))
+        if approved.device_type != record.device_type:
+            findings.append(("type", record.name, f"{approved.device_type} -> {record.device_type}"))
+        if approved.risk_label != record.risk_label:
+            findings.append(("risk", record.name, f"{approved.risk_label} -> {record.risk_label}"))
+
+    for record in baseline:
+        if record.device_id not in current_by_id:
+            findings.append(("missing", record.name, f"Last approved at {record.ip or 'n/d'}"))
+
+    return findings
 
 
 def _print_memory_report(
@@ -414,7 +534,7 @@ def _clip_plain(value: str, width: int) -> str:
 
 
 def _history_command_requested(args: argparse.Namespace) -> bool:
-    return bool(args.memory or args.timeline)
+    return bool(args.memory or args.timeline or getattr(args, "baseline", None))
 
 
 def _cidr_not_required(args: argparse.Namespace) -> bool:

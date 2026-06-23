@@ -80,6 +80,32 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(latency[0][1], 2)
         self.assertEqual(latency[0][2], 50.0)
 
+    def test_saves_and_clears_baseline_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = HistoryStore(Path(directory) / "history.db")
+            store.connect()
+            try:
+                device = Device(
+                    ip="192.168.1.20",
+                    mac="aa:bb:cc:dd:ee:20",
+                    name="Workstation",
+                    known=True,
+                )
+                store.record_snapshot([device])
+                records = store.device_records()
+
+                saved = store.save_baseline(records)
+                baseline = store.baseline_records()
+                saved_at = store.baseline_saved_at()
+                removed = store.clear_baseline()
+            finally:
+                store.close()
+
+        self.assertEqual(saved, 1)
+        self.assertEqual(baseline[0].device_id, device.id)
+        self.assertIsNotNone(saved_at)
+        self.assertEqual(removed, 1)
+
     def test_prunes_metrics_and_events_older_than_retention(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = HistoryStore(Path(directory) / "history.db", retention_days=7)

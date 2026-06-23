@@ -9,7 +9,8 @@ from pathlib import Path
 
 from rich.console import Console
 
-from netpulse.cli import _memory_scroll_offset, build_parser, run_history_command
+from netpulse.cli import _baseline_findings, _memory_scroll_offset, build_parser, run_history_command
+from netpulse.memory import DeviceMemoryRecord
 from netpulse.models import Device, NetworkEvent
 from netpulse.storage import HistoryStore
 
@@ -94,6 +95,14 @@ class CliParserTests(unittest.TestCase):
         self.assertTrue(args.memory)
         self.assertIsNone(args.cidr)
 
+    def test_accepts_baseline_without_cidr(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["--baseline", "diff"])
+
+        self.assertEqual(args.baseline, "diff")
+        self.assertIsNone(args.cidr)
+
     def test_memory_command_prints_remembered_devices(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             history_path = Path(directory) / "history.db"
@@ -163,6 +172,98 @@ class CliParserTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("NetPulse timeline", text)
         self.assertIn("Node NAS connected", text)
+
+    def test_baseline_command_reports_new_devices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history_path = Path(directory) / "history.db"
+            store = HistoryStore(history_path)
+            store.connect()
+            try:
+                approved = Device(
+                    ip="192.168.1.20",
+                    mac="aa:bb:cc:dd:ee:20",
+                    name="Workstation",
+                    known=True,
+                )
+                store.record_snapshot([approved])
+                store.save_baseline(store.device_records())
+                current = Device(
+                    ip="192.168.1.30",
+                    mac="aa:bb:cc:dd:ee:30",
+                    name="NAS",
+                    known=False,
+                )
+                store.record_snapshot([approved, current])
+            finally:
+                store.close()
+
+            output = io.StringIO()
+            console = Console(file=output, force_terminal=False, width=120)
+            run_history_command(
+                console,
+                Namespace(
+                    history=history_path,
+                    retention_days=0,
+                    memory=False,
+                    timeline=None,
+                    baseline="diff",
+                    history_limit=10,
+                ),
+            )
+
+        text = output.getvalue()
+        self.assertIn("NetPulse baseline diff", text)
+        self.assertIn("new", text)
+        self.assertIn("NAS", text)
+
+    def test_baseline_findings_reports_missing_and_changed_devices(self) -> None:
+        baseline = [
+            DeviceMemoryRecord(
+                device_id="aa",
+                mac="aa",
+                ip="192.168.1.20",
+                name="Workstation",
+                vendor="Unknown vendor",
+                device_type="host",
+                risk_label="trusted",
+                first_seen="",
+                last_seen="",
+                known=True,
+            ),
+            DeviceMemoryRecord(
+                device_id="bb",
+                mac="bb",
+                ip="192.168.1.30",
+                name="NAS",
+                vendor="Unknown vendor",
+                device_type="storage",
+                risk_label="trusted",
+                first_seen="",
+                last_seen="",
+                known=True,
+            ),
+        ]
+        current = [
+            DeviceMemoryRecord(
+                device_id="aa",
+                mac="aa",
+                ip="192.168.1.44",
+                name="Workstation",
+                vendor="Unknown vendor",
+                device_type="host",
+                risk_label="watch",
+                first_seen="",
+                last_seen="",
+                known=True,
+            )
+        ]
+
+        findings = _baseline_findings(baseline, current)
+
+        kinds = [finding[0] for finding in findings]
+        self.assertIn("ip", kinds)
+        self.assertIn("risk", kinds)
+        self.assertIn("missing", kinds)
 
 
 if __name__ == "__main__":
