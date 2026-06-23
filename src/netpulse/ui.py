@@ -215,7 +215,7 @@ class Dashboard:
         )
 
     def _render_network_map(self) -> Panel:
-        devices = self.state.sorted_devices()
+        devices = self.state.attention_devices()
         selected = self.state.selected_device()
         visible, page, total_pages = self._map_visible_devices(devices, page_size=10)
         online = sum(1 for device in devices if device.online)
@@ -493,34 +493,11 @@ class Dashboard:
         return single_line[: max(0, width - 1)] + "~"
 
     def _map_visible_devices(self, devices: list[Device], page_size: int) -> tuple[list[Device], int, int]:
-        ordered = self._map_ordered_devices(devices)
-        if not ordered:
+        if not devices:
             return [], 0, 0
-        ids = [device.id for device in ordered]
+        ids = [device.id for device in devices]
         selected_index = ids.index(self.state.selected_device_id) if self.state.selected_device_id in ids else 0
         page = selected_index // page_size
         start = page * page_size
-        total_pages = (len(ordered) + page_size - 1) // page_size
-        return ordered[start : start + page_size], page + 1, total_pages
-
-    @staticmethod
-    def _map_ordered_devices(devices: list[Device]) -> list[Device]:
-        def weight(device: Device) -> tuple[int, int, str]:
-            type_weight = {
-                "gateway": 0,
-                "storage": 1,
-                "host": 2,
-                "mobile": 3,
-                "iot": 4,
-            }.get(device.device_type, 5)
-            if device.device_type == "gateway":
-                risk_weight = 0
-            elif device.risk_label in {"unknown", "watch"}:
-                risk_weight = 1
-            elif not device.online:
-                risk_weight = 2
-            else:
-                risk_weight = 3
-            return (risk_weight, type_weight, device.ip)
-
-        return sorted(devices, key=weight)
+        total_pages = (len(devices) + page_size - 1) // page_size
+        return devices[start : start + page_size], page + 1, total_pages

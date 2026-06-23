@@ -749,6 +749,8 @@ async def _input_loop(
         elif action.name in {"left", "right", "up", "down"}:
             if state.view_mode == "memory":
                 state.scroll_memory(_memory_scroll_offset(action.name))
+            elif state.view_mode == "map":
+                state.move_attention_selection(_selection_offset(state.view_mode, action.name))
             else:
                 state.move_selection(_selection_offset(state.view_mode, action.name))
         if live is not None:

@@ -164,6 +164,27 @@ class NetworkState:
             key=lambda item: (not item.online, not item.known, item.name.lower(), item.ip),
         )
 
+    def attention_devices(self) -> list[Device]:
+        def weight(device: Device) -> tuple[int, int, str]:
+            type_weight = {
+                "gateway": 0,
+                "storage": 1,
+                "host": 2,
+                "mobile": 3,
+                "iot": 4,
+            }.get(device.device_type, 5)
+            if device.device_type == "gateway":
+                risk_weight = 0
+            elif device.risk_label in {"unknown", "watch"}:
+                risk_weight = 1
+            elif not device.online:
+                risk_weight = 2
+            else:
+                risk_weight = 3
+            return (risk_weight, type_weight, device.ip)
+
+        return sorted(self.devices.values(), key=weight)
+
     def selected_device(self) -> Device | None:
         if self.selected_device_id is None:
             return None
@@ -182,7 +203,12 @@ class NetworkState:
         return devices[start:end], page + 1, total_pages
 
     def move_selection(self, offset: int) -> None:
-        devices = self.sorted_devices()
+        self._move_selection_in(self.sorted_devices(), offset)
+
+    def move_attention_selection(self, offset: int) -> None:
+        self._move_selection_in(self.attention_devices(), offset)
+
+    def _move_selection_in(self, devices: list[Device], offset: int) -> None:
         if not devices:
             self.selected_device_id = None
             return

@@ -82,6 +82,24 @@ class NetworkStateTests(unittest.TestCase):
         state.scroll_memory(-99, page_size=7)
         self.assertEqual(state.memory_scroll_offset, 0)
 
+    def test_attention_selection_follows_map_order(self) -> None:
+        registry = DeviceRegistry(Path("unused.json"))
+        state = NetworkState(registry, gateway_ip="192.168.1.1")
+        state.apply_scan_results(
+            [
+                ScanResult("192.168.1.1", "00:1a:2b:10:00:01", 4.0, "Gateway"),
+                ScanResult("192.168.1.24", "00:11:32:10:00:24", 9.0, "NAS"),
+                ScanResult("192.168.1.101", "72:8f:11:10:01:01", None, "Unknown Sensor"),
+            ]
+        )
+
+        self.assertEqual(state.selected_device().ip, "192.168.1.1")
+
+        expected_next = state.attention_devices()[1].ip
+        state.move_attention_selection(1)
+
+        self.assertEqual(state.selected_device().ip, expected_next)
+
 
 if __name__ == "__main__":
     unittest.main()
