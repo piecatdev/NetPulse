@@ -102,11 +102,7 @@ class NetworkEngine:
         return sorted(targets)
 
     async def _ping_host(self, ip: str) -> ScanResult | None:
-        system = platform.system().lower()
-        if "windows" in system:
-            command = ["ping", "-n", "1", "-w", str(int(self.timeout * 1000)), ip]
-        else:
-            command = ["ping", "-c", "1", "-W", str(max(1, int(self.timeout))), ip]
+        command = self._ping_command(ip, platform.system().lower())
 
         started = time.perf_counter()
         process = await asyncio.create_subprocess_exec(
@@ -127,6 +123,14 @@ class NetworkEngine:
         latency_ms = (time.perf_counter() - started) * 1000
         hostname = await asyncio.to_thread(self._resolve_hostname, ip) if self.resolve_names else None
         return ScanResult(ip=ip, mac="", latency_ms=latency_ms, hostname=hostname)
+
+    def _ping_command(self, ip: str, system: str) -> list[str]:
+        timeout_ms = max(1, int(self.timeout * 1000))
+        if "windows" in system:
+            return ["ping", "-n", "1", "-w", str(timeout_ms), ip]
+        if "darwin" in system:
+            return ["ping", "-c", "1", "-W", str(timeout_ms), ip]
+        return ["ping", "-c", "1", "-W", str(max(1, int(self.timeout))), ip]
 
     async def _read_arp_table(self) -> dict[str, str]:
         text = await asyncio.to_thread(self._read_arp_table_sync)

@@ -60,6 +60,14 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+On macOS or Linux, use the same install flow with the POSIX activation path:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
 ## Usage
 
 ```powershell
@@ -99,6 +107,22 @@ netpulse 192.168.1.0/24 --resolve-names
 ```
 
 Note: `--resolve-names` can be slow on Windows if the network does not answer reverse DNS queries quickly.
+
+## Cross-Platform Notes
+
+NetPulse is intended to run on Windows, macOS, and Linux. Discovery is local-only
+and depends on operating-system networking tools:
+
+- `ping` is used for active probes, with OS-specific timeout flags.
+- `arp -a` is used for the ARP-cache snapshot.
+- Windows uses `route print` to detect the default gateway when possible.
+- macOS/Linux currently estimate the gateway from the scanned subnet when it
+  cannot be detected portably.
+- Direct dashboard key input uses Windows console events on Windows and POSIX
+  terminal input on macOS/Linux.
+
+If direct key input is unreliable in a terminal, use `--line-input` and type
+commands followed by Enter.
 
 ## Dashboard
 
@@ -302,6 +326,15 @@ Run the unit tests with the project virtual environment:
 ```powershell
 .\.venv\Scripts\python.exe -B -m unittest discover -v
 ```
+
+On macOS/Linux:
+
+```bash
+.venv/bin/python -B -m unittest discover -v
+```
+
+The GitHub Actions test workflow runs this suite on Windows, macOS, and Linux
+for Python 3.10, 3.11, and 3.12.
 
 If you want to run a full bytecode compilation check on Windows/OneDrive,
 write Python's cache outside the project directory:
