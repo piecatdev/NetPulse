@@ -305,7 +305,7 @@ class Dashboard:
         table.add_row("[dim]MAC[/]", f"[dim]{device.mac or 'unknown'}[/]")
         table.add_row("[dim]Profile[/]", known_badge)
         table.add_row("[dim]Type[/]", device.device_type)
-        table.add_row("[dim]ID[/]", device.confidence)
+        table.add_row("[dim]Identity[/]", self._identity_summary(device, compact=True))
         table.add_row("[dim]Risk[/]", f"[{self._risk_style(device)}]{device.risk_label}[/]")
         table.add_row("[dim]Activity[/]", activity)
 
@@ -345,8 +345,7 @@ class Dashboard:
         table.add_row("[dim]MAC[/]", device.mac or "unknown")
         table.add_row("[dim]Vendor[/]", device.vendor)
         table.add_row("[dim]Type[/]", device.device_type)
-        table.add_row("[dim]Confidence[/]", device.confidence)
-        table.add_row("[dim]Signals[/]", self._identity_signals(device))
+        table.add_row("[dim]Identity[/]", self._identity_summary(device))
         table.add_row("[dim]State[/]", f"[{PULSE}]online[/]" if device.online else f"[{DANGER}]offline[/]")
         table.add_row("[dim]Profile[/]", f"[{PULSE}]known[/]" if device.known else f"[{WARNING}]unknown[/]")
         table.add_row("[dim]Risk[/]", f"[{self._risk_style(device)}]{device.risk_label} ({device.risk_score})[/]")
@@ -495,11 +494,23 @@ class Dashboard:
             return single_line
         return single_line[: max(0, width - 1)] + "~"
 
-    @staticmethod
-    def _identity_signals(device: Device) -> str:
+    def _identity_summary(self, device: Device, *, compact: bool = False) -> str:
+        style = self._confidence_style(device.confidence)
+        label = f"[{style}]{device.confidence}[/]"
+        if compact:
+            return label
         if not device.identity_signals:
-            return "none"
-        return ", ".join(device.identity_signals[:4])
+            return f"{label} [{MUTED}]confidence[/]"
+        signals = " + ".join(device.identity_signals[:4])
+        return f"{label} [{MUTED}]from[/] {signals}"
+
+    @staticmethod
+    def _confidence_style(confidence: str) -> str:
+        if confidence == "high":
+            return PULSE
+        if confidence == "medium":
+            return ACCENT
+        return WARNING
 
     def _map_visible_devices(self, devices: list[Device], page_size: int) -> tuple[list[Device], int, int]:
         if not devices:

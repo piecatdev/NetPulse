@@ -59,6 +59,43 @@ class DashboardRenderingTests(unittest.TestCase):
         self.assertNotIn("WAN", output)
         self.assertNotIn("NETPULSE CORE", output)
 
+    def test_detail_view_explains_identity_without_extra_columns(self) -> None:
+        state = NetworkState(DeviceRegistry(Path("unused.json")), gateway_ip="192.168.1.1")
+        state.apply_scan_results(
+            [
+                ScanResult("192.168.1.1", "00:1a:2b:10:00:01", 4.0, "Gateway"),
+            ]
+        )
+
+        console = Console(file=io.StringIO(), record=True, width=120, height=36)
+        console.print(Dashboard(state).render())
+        output = console.export_text(styles=False)
+
+        self.assertIn("Identity", output)
+        self.assertIn("high from", output)
+        self.assertIn("gateway ip", output)
+        self.assertNotIn("Signals", output)
+        self.assertNotIn("Confidence", output)
+
+    def test_card_view_keeps_identity_compact(self) -> None:
+        state = NetworkState(DeviceRegistry(Path("unused.json")), gateway_ip="192.168.1.1")
+        state.view_mode = "cards"
+        state.apply_scan_results(
+            [
+                ScanResult("192.168.1.1", "00:1a:2b:10:00:01", 4.0, "Gateway"),
+                ScanResult("192.168.1.24", "00:11:32:10:00:24", 9.0, "NAS"),
+                ScanResult("192.168.1.101", "72:8f:11:10:01:01", None, "Unknown Sensor"),
+            ]
+        )
+
+        console = Console(file=io.StringIO(), record=True, width=120, height=36)
+        console.print(Dashboard(state).render())
+        output = console.export_text(styles=False)
+
+        self.assertIn("Device Cards", output)
+        self.assertIn("Identity", output)
+        self.assertNotIn("Identity            high from", output)
+
 
 if __name__ == "__main__":
     unittest.main()
