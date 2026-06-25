@@ -64,12 +64,17 @@ class KeyboardInput:
 
     @staticmethod
     def _poll_posix_key() -> str:
+        fd = sys.stdin.fileno()
+        if not sys.stdin.isatty():
+            return ""
         import select
         import termios
         import tty
 
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
+        try:
+            old_settings = termios.tcgetattr(fd)
+        except termios.error:
+            return ""
         try:
             tty.setcbreak(fd)
             ready, _, _ = select.select([sys.stdin], [], [], 0)
