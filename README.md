@@ -178,10 +178,15 @@ NetPulse enriches each device with local-only intelligence:
 
 - vendor estimate from MAC/OUI prefixes;
 - estimated type: `gateway`, `host`, `mobile`, `storage`, `iot`;
+- identity confidence: `high`, `medium`, or `low`;
+- identity signals such as saved name, hostname, MAC vendor, gateway IP, and
+  type hint;
 - risk label: `trusted`, `unknown`, `watch`;
 - numeric risk score.
 
-The classification is conservative and local. It uses hostname hints, known OUI prefixes, MAC presence, and the estimated gateway.
+The classification is conservative and local. It uses hostname hints, known OUI
+prefixes, MAC presence, saved names, and gateway detection. The detail panel
+shows why NetPulse believes an identity is more or less reliable.
 
 ## Network Overview
 

@@ -17,6 +17,8 @@ class Device:
     device_type: str = "host"
     risk_label: str = "unknown"
     risk_score: int = 50
+    confidence: str = "low"
+    identity_signals: tuple[str, ...] = ()
     latency_ms: float | None = None
     first_seen: datetime = field(default_factory=datetime.now)
     last_seen: datetime = field(default_factory=datetime.now)

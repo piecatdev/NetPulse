@@ -25,6 +25,8 @@ class NetworkStateTests(unittest.TestCase):
 
         self.assertEqual(len(state.devices), 2)
         self.assertEqual(state.selected_device().ip, "192.168.1.1")
+        self.assertEqual(state.selected_device().confidence, "high")
+        self.assertIn("gateway ip", state.selected_device().identity_signals)
         self.assertTrue(all(device.online for device in state.devices.values()))
 
         state.apply_scan_results([ScanResult("192.168.1.1", "aa:bb:cc:dd:ee:01", 5.0)])

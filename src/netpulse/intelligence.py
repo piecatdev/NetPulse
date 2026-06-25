@@ -36,11 +36,13 @@ class DeviceIntelligence:
         *,
         known: bool,
         gateway_ip: str | None = None,
-    ) -> tuple[str, str, str, int]:
+    ) -> tuple[str, str, str, int, str, tuple[str, ...]]:
         vendor = self.vendor_for(result.mac)
         device_type = self.device_type_for(result, vendor, gateway_ip)
         risk_label, risk_score = self.risk_for(result, known, device_type, vendor)
-        return vendor, device_type, risk_label, risk_score
+        signals = self.identity_signals(result, known, vendor, device_type, gateway_ip)
+        confidence = self.confidence_for(signals)
+        return vendor, device_type, risk_label, risk_score, confidence, signals
 
     @staticmethod
     def vendor_for(mac: str) -> str:
@@ -89,6 +91,41 @@ class DeviceIntelligence:
         if score >= 75:
             return "watch", score
         return "unknown", score
+
+    @staticmethod
+    def identity_signals(
+        result: ScanResult,
+        known: bool,
+        vendor: str,
+        device_type: str,
+        gateway_ip: str | None,
+    ) -> tuple[str, ...]:
+        signals: list[str] = []
+        if known:
+            signals.append("saved name")
+        if result.hostname:
+            signals.append("hostname")
+        if vendor != "Unknown vendor":
+            signals.append("mac vendor")
+        if gateway_ip and result.ip == gateway_ip:
+            signals.append("gateway ip")
+        elif device_type != "host":
+            signals.append("type hint")
+        if result.mac:
+            signals.append("mac address")
+        return tuple(signals)
+
+    @staticmethod
+    def confidence_for(signals: tuple[str, ...]) -> str:
+        if "gateway ip" in signals:
+            return "high"
+        strong = {"saved name", "gateway ip", "hostname"}
+        score = len(signals) + sum(1 for signal in signals if signal in strong)
+        if score >= 5:
+            return "high"
+        if score >= 3:
+            return "medium"
+        return "low"
 
 
 def _is_link_local(ip: str) -> bool:

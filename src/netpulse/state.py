@@ -63,7 +63,14 @@ class NetworkState:
             fallback_name = result.hostname or f"Host {result.ip}"
             name = self.registry.get_name(result.mac, fallback_name)
             known = self.registry.has_name(result.mac)
-            vendor, device_type, risk_label, risk_score = self.intelligence.classify(
+            (
+                vendor,
+                device_type,
+                risk_label,
+                risk_score,
+                confidence,
+                identity_signals,
+            ) = self.intelligence.classify(
                 result,
                 known=known,
                 gateway_ip=self.gateway_ip,
@@ -81,6 +88,8 @@ class NetworkState:
                     device_type=device_type,
                     risk_label=risk_label,
                     risk_score=risk_score,
+                    confidence=confidence,
+                    identity_signals=identity_signals,
                     latency_ms=result.latency_ms,
                     first_seen=now,
                     last_seen=now,
@@ -104,6 +113,8 @@ class NetworkState:
                 existing.device_type = device_type
                 existing.risk_label = risk_label
                 existing.risk_score = risk_score
+                existing.confidence = confidence
+                existing.identity_signals = identity_signals
                 existing.latency_ms = result.latency_ms
                 existing.last_seen = now
                 if was_offline:

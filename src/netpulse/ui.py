@@ -305,6 +305,7 @@ class Dashboard:
         table.add_row("[dim]MAC[/]", f"[dim]{device.mac or 'unknown'}[/]")
         table.add_row("[dim]Profile[/]", known_badge)
         table.add_row("[dim]Type[/]", device.device_type)
+        table.add_row("[dim]ID[/]", device.confidence)
         table.add_row("[dim]Risk[/]", f"[{self._risk_style(device)}]{device.risk_label}[/]")
         table.add_row("[dim]Activity[/]", activity)
 
@@ -344,6 +345,8 @@ class Dashboard:
         table.add_row("[dim]MAC[/]", device.mac or "unknown")
         table.add_row("[dim]Vendor[/]", device.vendor)
         table.add_row("[dim]Type[/]", device.device_type)
+        table.add_row("[dim]Confidence[/]", device.confidence)
+        table.add_row("[dim]Signals[/]", self._identity_signals(device))
         table.add_row("[dim]State[/]", f"[{PULSE}]online[/]" if device.online else f"[{DANGER}]offline[/]")
         table.add_row("[dim]Profile[/]", f"[{PULSE}]known[/]" if device.known else f"[{WARNING}]unknown[/]")
         table.add_row("[dim]Risk[/]", f"[{self._risk_style(device)}]{device.risk_label} ({device.risk_score})[/]")
@@ -491,6 +494,12 @@ class Dashboard:
         if len(single_line) <= width:
             return single_line
         return single_line[: max(0, width - 1)] + "~"
+
+    @staticmethod
+    def _identity_signals(device: Device) -> str:
+        if not device.identity_signals:
+            return "none"
+        return ", ".join(device.identity_signals[:4])
 
     def _map_visible_devices(self, devices: list[Device], page_size: int) -> tuple[list[Device], int, int]:
         if not devices:
