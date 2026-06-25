@@ -6,19 +6,6 @@ import queue
 import sys
 import threading
 from dataclasses import dataclass
-from ctypes import (
-    POINTER,
-    Structure,
-    Union,
-    byref,
-    c_int,
-    c_long,
-    c_uint,
-    c_ushort,
-    c_wchar,
-    windll,
-)
-from ctypes.wintypes import BOOL, DWORD, HANDLE, WORD
 from time import monotonic
 
 
@@ -168,46 +155,45 @@ def _read_windows_escape_sequence(msvcrt_module) -> str:
     return "".join(chars)
 
 
-STD_INPUT_HANDLE = -10
-KEY_EVENT = 0x0001
-VK_LEFT = 0x25
-VK_UP = 0x26
-VK_RIGHT = 0x27
-VK_DOWN = 0x28
-
-
-class _KEY_EVENT_RECORD(Structure):
-    _fields_ = [
-        ("bKeyDown", BOOL),
-        ("wRepeatCount", WORD),
-        ("wVirtualKeyCode", WORD),
-        ("wVirtualScanCode", WORD),
-        ("UnicodeChar", c_wchar),
-        ("dwControlKeyState", DWORD),
-    ]
-
-
-class _INPUT_RECORD_EVENT(Union):
-    _fields_ = [
-        ("KeyEvent", _KEY_EVENT_RECORD),
-        ("padding", c_ushort * 16),
-    ]
-
-
-class _INPUT_RECORD(Structure):
-    _fields_ = [
-        ("EventType", WORD),
-        ("Event", _INPUT_RECORD_EVENT),
-    ]
-
-
 def _poll_windows_console_event() -> str:
+    from ctypes import Structure, Union, byref, c_ushort, c_wchar, windll
+    from ctypes.wintypes import BOOL, DWORD, HANDLE, WORD
+
+    std_input_handle = -10
+    key_event = 0x0001
+    vk_left = 0x25
+    vk_up = 0x26
+    vk_right = 0x27
+    vk_down = 0x28
+
+    class _KEY_EVENT_RECORD(Structure):
+        _fields_ = [
+            ("bKeyDown", BOOL),
+            ("wRepeatCount", WORD),
+            ("wVirtualKeyCode", WORD),
+            ("wVirtualScanCode", WORD),
+            ("UnicodeChar", c_wchar),
+            ("dwControlKeyState", DWORD),
+        ]
+
+    class _INPUT_RECORD_EVENT(Union):
+        _fields_ = [
+            ("KeyEvent", _KEY_EVENT_RECORD),
+            ("padding", c_ushort * 16),
+        ]
+
+    class _INPUT_RECORD(Structure):
+        _fields_ = [
+            ("EventType", WORD),
+            ("Event", _INPUT_RECORD_EVENT),
+        ]
+
     try:
         kernel32 = windll.kernel32
     except (AttributeError, OSError):
         return ""
 
-    handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+    handle = kernel32.GetStdHandle(std_input_handle)
     if not handle or handle == HANDLE(-1).value:
         return ""
 
@@ -221,7 +207,7 @@ def _poll_windows_console_event() -> str:
     read = DWORD()
     if not kernel32.ReadConsoleInputW(handle, byref(record), 1, byref(read)):
         return ""
-    if read.value == 0 or record.EventType != KEY_EVENT:
+    if read.value == 0 or record.EventType != key_event:
         return ""
 
     event = record.Event.KeyEvent
@@ -229,13 +215,13 @@ def _poll_windows_console_event() -> str:
         return ""
 
     virtual_key = int(event.wVirtualKeyCode)
-    if virtual_key == VK_UP:
+    if virtual_key == vk_up:
         return "up"
-    if virtual_key == VK_DOWN:
+    if virtual_key == vk_down:
         return "down"
-    if virtual_key == VK_LEFT:
+    if virtual_key == vk_left:
         return "left"
-    if virtual_key == VK_RIGHT:
+    if virtual_key == vk_right:
         return "right"
 
     char = event.UnicodeChar
