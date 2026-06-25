@@ -20,6 +20,8 @@ NetPulse is a Python CLI/TUI for discovering, inspecting, and visualizing device
 
 ## Quick Start
 
+Windows:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -27,9 +29,18 @@ python -m pip install -e .
 netpulse 192.168.1.0/24
 ```
 
+macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+netpulse 192.168.1.0/24
+```
+
 Preview the dashboard with synthetic data:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --demo
 ```
 
@@ -54,13 +65,15 @@ NetPulse/
 
 ## Installation
 
+Windows:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 ```
 
-On macOS or Linux, use the same install flow with the POSIX activation path:
+macOS/Linux:
 
 ```bash
 python3 -m venv .venv
@@ -70,7 +83,7 @@ python -m pip install -e .
 
 ## Usage
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --timeout 1
 ```
 
@@ -84,25 +97,25 @@ This keeps the ASCII map readable and avoids constant layout movement.
 
 For continuous monitoring:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --watch --interval 5
 ```
 
 For screenshots or demos without scanning your real network:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --demo
 ```
 
 For a deeper subnet scan:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --deep-scan
 ```
 
 For reverse-DNS hostname resolution:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --resolve-names
 ```
 
@@ -125,6 +138,10 @@ and depends on operating-system networking tools:
 
 If direct key input is unreliable in a terminal, use `--line-input` and type
 commands followed by Enter.
+
+The automated test suite runs on Windows, macOS, and Linux in GitHub Actions.
+For local troubleshooting, start with `--demo`, then `--diag`, then
+`--once --plain` against your real subnet.
 
 ## Dashboard
 
@@ -149,7 +166,7 @@ In table view, up/down moves one device at a time. In card view, up/down follows
 
 If direct key input is unreliable in your terminal, use:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --line-input
 ```
 
@@ -215,51 +232,51 @@ NetPulse stores runtime history in `netpulse.db`:
 
 You can choose a different history database:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --history lan-history.db
 ```
 
 By default, NetPulse keeps all stored metrics and events. To prune old runtime
 history on startup, set a retention window:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --watch --retention-days 30
 ```
 
 You can inspect remembered history without starting a scan:
 
-```powershell
+```bash
 netpulse --memory
 ```
 
 Show a device timeline by MAC, IP, remembered id, or name:
 
-```powershell
+```bash
 netpulse --timeline 192.168.1.24
 netpulse --timeline "NAS Vault"
 ```
 
 Limit report rows when you want a shorter view:
 
-```powershell
+```bash
 netpulse --memory --history-limit 5
 ```
 
 After reviewing remembered devices, save an approved baseline:
 
-```powershell
+```bash
 netpulse --baseline save
 ```
 
 Compare current memory against that approved baseline:
 
-```powershell
+```bash
 netpulse --baseline diff
 ```
 
 You can also inspect or clear the approved baseline:
 
-```powershell
+```bash
 netpulse --baseline show
 netpulse --baseline reset
 ```
@@ -283,7 +300,7 @@ NetPulse uses `devices.json` to associate friendly names with MAC addresses:
 
 You can rename a device from the CLI:
 
-```powershell
+```bash
 netpulse-rename aa:bb:cc:dd:ee:ff "Studio Laptop"
 ```
 
@@ -293,33 +310,36 @@ On the next scan, the device will use the friendly name instead of the fallback 
 
 Run one scan without the live dashboard:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --once
 ```
 
 Show only ARP-cache devices:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --once --arp-only
 ```
 
 Use plain text output:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --once --plain
 ```
 
 Print discovery diagnostics:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --diag
 ```
 
 Test keyboard input:
 
-```powershell
+```bash
 netpulse 192.168.1.0/24 --key-test
 ```
+
+If the dashboard does not react to keys in a specific terminal, rerun with
+`--line-input`. The scan behavior is the same; only command entry changes.
 
 ## Development
 
