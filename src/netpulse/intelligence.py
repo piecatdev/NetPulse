@@ -26,7 +26,29 @@ OUI_VENDORS = {
     "a4:77:33": "Google Nest",
     "44:65:0d": "Amazon",
     "fc:a1:83": "Amazon",
+    "24:0a:c4": "Espressif",
+    "30:ae:a4": "Espressif",
+    "84:f3:eb": "Espressif",
 }
+
+GATEWAY_HINTS = ("router", "gateway", "fritz", "openwrt", "tplink", "deco", "eero")
+STORAGE_HINTS = ("nas", "synology", "qnap", "truenas", "storage")
+PRINTER_HINTS = ("printer", "print", "hp-", "brother", "canon", "epson", "laserjet")
+CAMERA_HINTS = ("camera", "cam", "ipcam", "webcam", "reolink", "arlo", "hikvision")
+MOBILE_HINTS = ("iphone", "ipad", "android", "phone", "pixel", "galaxy")
+IOT_HINTS = (
+    "tv",
+    "chromecast",
+    "nest",
+    "alexa",
+    "echo",
+    "speaker",
+    "homepod",
+    "sensor",
+    "esp",
+    "plug",
+    "bulb",
+)
 
 
 class DeviceIntelligence:
@@ -56,17 +78,21 @@ class DeviceIntelligence:
         hostname = (result.hostname or "").lower()
         if gateway_ip and result.ip == gateway_ip:
             return "gateway"
-        if any(token in hostname for token in ("router", "gateway", "fritz", "openwrt")):
+        if any(token in hostname for token in GATEWAY_HINTS):
             return "gateway"
-        if any(token in hostname for token in ("nas", "synology", "qnap")):
+        if any(token in hostname for token in STORAGE_HINTS):
             return "storage"
-        if any(token in hostname for token in ("iphone", "ipad", "android", "phone")):
+        if any(token in hostname for token in PRINTER_HINTS):
+            return "printer"
+        if any(token in hostname for token in CAMERA_HINTS):
+            return "camera"
+        if any(token in hostname for token in MOBILE_HINTS):
             return "mobile"
-        if any(token in hostname for token in ("tv", "chromecast", "nest", "alexa", "echo")):
+        if any(token in hostname for token in IOT_HINTS):
             return "iot"
         if vendor in {"Synology", "QNAP"}:
             return "storage"
-        if vendor in {"Google Nest", "Amazon"}:
+        if vendor in {"Google Nest", "Amazon", "Espressif"}:
             return "iot"
         return "host"
 

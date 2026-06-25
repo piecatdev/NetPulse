@@ -183,6 +183,8 @@ class NetworkState:
                 "host": 2,
                 "mobile": 3,
                 "iot": 4,
+                "printer": 5,
+                "camera": 6,
             }.get(device.device_type, 5)
             if device.device_type == "gateway":
                 risk_weight = 0

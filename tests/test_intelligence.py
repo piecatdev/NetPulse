@@ -66,6 +66,59 @@ class DeviceIntelligenceTests(unittest.TestCase):
         self.assertEqual(confidence, "low")
         self.assertEqual(signals, ())
 
+    def test_hostname_identifies_printer(self) -> None:
+        intelligence = DeviceIntelligence()
+
+        _, device_type, _, _, confidence, signals = intelligence.classify(
+            ScanResult("192.168.1.45", "aa:bb:cc:10:00:45", 12.0, "Office-Printer"),
+            known=False,
+            gateway_ip="192.168.1.1",
+        )
+
+        self.assertEqual(device_type, "printer")
+        self.assertEqual(confidence, "medium")
+        self.assertIn("type hint", signals)
+
+    def test_hostname_identifies_camera(self) -> None:
+        intelligence = DeviceIntelligence()
+
+        _, device_type, _, _, confidence, signals = intelligence.classify(
+            ScanResult("192.168.1.60", "aa:bb:cc:10:00:60", 20.0, "front-camera"),
+            known=False,
+            gateway_ip="192.168.1.1",
+        )
+
+        self.assertEqual(device_type, "camera")
+        self.assertEqual(confidence, "medium")
+        self.assertIn("type hint", signals)
+
+    def test_espressif_vendor_identifies_iot_device(self) -> None:
+        intelligence = DeviceIntelligence()
+
+        vendor, device_type, _, _, confidence, signals = intelligence.classify(
+            ScanResult("192.168.1.70", "24:0a:c4:10:00:70", None, None),
+            known=False,
+            gateway_ip="192.168.1.1",
+        )
+
+        self.assertEqual(vendor, "Espressif")
+        self.assertEqual(device_type, "iot")
+        self.assertEqual(confidence, "medium")
+        self.assertIn("mac vendor", signals)
+
+    def test_hostname_identifies_router(self) -> None:
+        intelligence = DeviceIntelligence()
+
+        _, device_type, _, _, confidence, signals = intelligence.classify(
+            ScanResult("192.168.1.2", "aa:bb:cc:10:00:02", 3.0, "openwrt-lab"),
+            known=False,
+            gateway_ip="192.168.1.1",
+        )
+
+        self.assertEqual(device_type, "gateway")
+        self.assertEqual(confidence, "medium")
+        self.assertIn("type hint", signals)
+
 
 if __name__ == "__main__":
     unittest.main()

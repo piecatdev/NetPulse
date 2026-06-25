@@ -177,7 +177,7 @@ Then type commands followed by Enter: `j`, `k`, `v`, `r`, `q`.
 NetPulse enriches each device with local-only intelligence:
 
 - vendor estimate from MAC/OUI prefixes;
-- estimated type: `gateway`, `host`, `mobile`, `storage`, `iot`;
+- estimated type: `gateway`, `host`, `mobile`, `storage`, `printer`, `camera`, `iot`;
 - identity confidence: `high`, `medium`, or `low`;
 - identity signals such as saved name, hostname, MAC vendor, gateway IP, and
   type hint;
