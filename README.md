@@ -116,8 +116,10 @@ and depends on operating-system networking tools:
 - `ping` is used for active probes, with OS-specific timeout flags.
 - `arp -a` is used for the ARP-cache snapshot.
 - Windows uses `route print` to detect the default gateway when possible.
-- macOS/Linux currently estimate the gateway from the scanned subnet when it
-  cannot be detected portably.
+- macOS uses `route -n get default` to detect the default gateway when possible.
+- Linux uses `ip route show default` to detect the default gateway when possible.
+- If gateway detection fails, NetPulse estimates the gateway from the scanned
+  subnet.
 - Direct dashboard key input uses Windows console events on Windows and POSIX
   terminal input on macOS/Linux.
 

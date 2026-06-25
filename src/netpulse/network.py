@@ -13,8 +13,8 @@ from .models import ScanResult
 from .state import NetworkState
 
 ARP_LINE = re.compile(
-    r"(?P<ip>\d+\.\d+\.\d+\.\d+)\s+"
-    r"(?P<mac>(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2})"
+    r"(?P<ip>\d+\.\d+\.\d+\.\d+).*?"
+    r"(?P<mac>(?:[0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2})"
 )
 
 
@@ -134,8 +134,12 @@ class NetworkEngine:
 
     async def _read_arp_table(self) -> dict[str, str]:
         text = await asyncio.to_thread(self._read_arp_table_sync)
+        return self._parse_arp_table(text)
+
+    @staticmethod
+    def _parse_arp_table(text: str) -> dict[str, str]:
         return {
-            match.group("ip"): match.group("mac").replace("-", ":").lower()
+            match.group("ip"): _normalize_mac(match.group("mac"))
             for match in ARP_LINE.finditer(text)
         }
 
@@ -173,11 +177,12 @@ class NetworkEngine:
         return self.network.num_addresses - 2
 
     def _detect_gateway_ip(self) -> str | None:
-        if platform.system().lower() != "windows":
+        command = self._gateway_command(platform.system().lower())
+        if command is None:
             return None
         try:
             completed = subprocess.run(
-                ["route", "print", "-4", "0.0.0.0"],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -186,15 +191,42 @@ class NetworkEngine:
         except (OSError, subprocess.SubprocessError):
             return None
 
-        gateway_candidates = re.findall(
-            r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)",
-            completed.stdout,
-            flags=re.MULTILINE,
-        )
-        for candidate in gateway_candidates:
-            try:
-                if ipaddress.ip_address(candidate) in self.network:
-                    return candidate
-            except ValueError:
-                continue
+        for candidate in self._gateway_candidates(completed.stdout):
+            if self._ip_in_network(candidate):
+                return candidate
         return None
+
+    @staticmethod
+    def _gateway_command(system: str) -> list[str] | None:
+        if "windows" in system:
+            return ["route", "print", "-4", "0.0.0.0"]
+        if "darwin" in system:
+            return ["route", "-n", "get", "default"]
+        if "linux" in system:
+            return ["ip", "route", "show", "default"]
+        return None
+
+    @staticmethod
+    def _gateway_candidates(text: str) -> list[str]:
+        candidates: list[str] = []
+        candidates.extend(
+            re.findall(
+                r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)",
+                text,
+                flags=re.MULTILINE,
+            )
+        )
+        candidates.extend(re.findall(r"\bgateway:\s*(\d+\.\d+\.\d+\.\d+)", text))
+        candidates.extend(re.findall(r"\bdefault\s+via\s+(\d+\.\d+\.\d+\.\d+)", text))
+        return candidates
+
+    def _ip_in_network(self, ip: str) -> bool:
+        try:
+            return ipaddress.ip_address(ip) in self.network
+        except ValueError:
+            return False
+
+
+def _normalize_mac(mac: str) -> str:
+    parts = mac.replace("-", ":").lower().split(":")
+    return ":".join(part.zfill(2) for part in parts)
