@@ -13,6 +13,7 @@ from rich.console import Console
 
 from netpulse.cli import (
     _baseline_findings,
+    _complete_on_cancellation,
     _memory_scroll_offset,
     _run_scan,
     _run_dashboard_workers,
@@ -415,6 +416,24 @@ class DashboardWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScanRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_waits_for_persistence_to_finish(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def persist() -> None:
+            started.set()
+            await release.wait()
+
+        task = asyncio.create_task(_complete_on_cancellation(persist()))
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+
+        self.assertFalse(task.done())
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
     async def test_refresh_applies_one_authoritative_scan_result(self) -> None:
         arp_only_device = ScanResult(
             ip="192.168.1.24",
@@ -427,14 +446,16 @@ class ScanRefreshTests(unittest.IsolatedAsyncioTestCase):
         engine.host_count = 254
         engine.scan_once = AsyncMock(return_value=[arp_only_device])
         state = MagicMock()
+        state.add_event_async = AsyncMock()
+        state.apply_scan_results_async = AsyncMock()
 
         await _run_scan(engine, state)
 
         engine.scan_once.assert_awaited_once_with()
-        state.apply_scan_results.assert_called_once_with([arp_only_device])
-        self.assertEqual(state.add_event.call_count, 2)
-        self.assertIn("Scan started", state.add_event.call_args_list[0].args[0])
-        self.assertIn("Scan complete", state.add_event.call_args_list[1].args[0])
+        state.apply_scan_results_async.assert_awaited_once_with([arp_only_device])
+        self.assertEqual(state.add_event_async.await_count, 2)
+        self.assertIn("Scan started", state.add_event_async.await_args_list[0].args[0])
+        self.assertIn("Scan complete", state.add_event_async.await_args_list[1].args[0])
 
 
 if __name__ == "__main__":

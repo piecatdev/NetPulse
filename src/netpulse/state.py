@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
+from collections.abc import Iterable
 from datetime import datetime
+from typing import cast
 
 from .intelligence import DeviceIntelligence
-from .memory import NetworkMemory, NetworkMemoryAnalyzer
+from .memory import DeviceMemoryRecord, NetworkMemory, NetworkMemoryAnalyzer
 from .models import Device, NetworkEvent, ScanResult
 from .persistence import DeviceRegistry
 from .storage import HistoryStore
+
+_LOAD_HISTORY = object()
 
 
 class NetworkState:
@@ -45,14 +50,23 @@ class NetworkState:
         )
         self._alerted_unknown_ids: set[str] = set()
         self._alerted_latency_ids: set[str] = set()
+        self._deferred_events: list[tuple[NetworkEvent, str | None]] = []
 
-    def apply_scan_results(self, results: list[ScanResult]) -> None:
+    def apply_scan_results(
+        self,
+        results: list[ScanResult],
+        *,
+        prior_records: Iterable[DeviceMemoryRecord] | object = _LOAD_HISTORY,
+        persist: bool = True,
+    ) -> None:
         now = datetime.now()
         seen_ids: set[str] = set()
-        prior_records = []
-        if self.history is not None:
+        records: Iterable[DeviceMemoryRecord] = []
+        if prior_records is not _LOAD_HISTORY:
+            records = cast(Iterable[DeviceMemoryRecord], prior_records)
+        elif self.history is not None:
             try:
-                prior_records = self.history.device_records()
+                records = self.history.device_records()
                 self.persistence_error = None
             except Exception as exc:
                 self.persistence_error = str(exc)
@@ -94,12 +108,15 @@ class NetworkState:
                     first_seen=now,
                     last_seen=now,
                 )
-                self.add_event(f"Node {name} connected", "success", device_id)
+                self.add_event(
+                    f"Node {name} connected", "success", device_id, persist=persist
+                )
                 if not known and device_id not in self._alerted_unknown_ids:
                     self.add_event(
                         f"Alert: new unknown device {name} ({result.ip})",
                         "warning",
                         device_id,
+                        persist=persist,
                     )
                     self._alerted_unknown_ids.add(device_id)
             else:
@@ -118,7 +135,9 @@ class NetworkState:
                 existing.latency_ms = result.latency_ms
                 existing.last_seen = now
                 if was_offline:
-                    self.add_event(f"Node {name} reconnected", "success", device_id)
+                    self.add_event(
+                        f"Node {name} reconnected", "success", device_id, persist=persist
+                    )
 
             if result.latency_ms is not None:
                 samples = self.latency_samples.setdefault(device_id, deque(maxlen=24))
@@ -128,6 +147,7 @@ class NetworkState:
                         f"Alert: high latency on {name} ({result.latency_ms:.0f} ms)",
                         "warning",
                         device_id,
+                        persist=persist,
                     )
                     self._alerted_latency_ids.add(device_id)
                 elif result.latency_ms <= 200:
@@ -136,35 +156,94 @@ class NetworkState:
         for device_id, device in self.devices.items():
             if device_id not in seen_ids and device.online:
                 device.online = False
-                self.add_event(f"Node {device.name} disconnected", "warning", device_id)
+                self.add_event(
+                    f"Node {device.name} disconnected",
+                    "warning",
+                    device_id,
+                    persist=persist,
+                )
 
         self.last_scan_at = now
         self.last_scan_count = len(results)
         self._ensure_selection()
         self.network_memory = self.memory_analyzer.analyze(
-            prior_records,
+            records,
             self.sorted_devices(),
             seen_ids,
         )
         self._clamp_memory_scroll()
         if self.network_memory.drift_label in {"medium", "high"}:
-            self.add_event(f"Network drift: {self.network_memory.summary}", "warning")
-        if self.history is not None:
+            self.add_event(
+                f"Network drift: {self.network_memory.summary}",
+                "warning",
+                persist=persist,
+            )
+        if persist and self.history is not None:
             try:
                 self.history.record_snapshot(self.devices.values())
                 self.persistence_error = None
             except Exception as exc:
                 self.persistence_error = str(exc)
 
-    def add_event(self, message: str, level: str = "info", device_id: str | None = None) -> None:
+    async def apply_scan_results_async(self, results: list[ScanResult]) -> None:
+        if self.history is None:
+            self.apply_scan_results(results)
+            return
+
+        try:
+            prior_records = await asyncio.to_thread(self.history.device_records)
+            self.persistence_error = None
+        except Exception as exc:
+            prior_records = []
+            self.persistence_error = str(exc)
+
+        self.apply_scan_results(results, prior_records=prior_records, persist=False)
+        await self._flush_deferred_events()
+        try:
+            devices = list(self.devices.values())
+            await asyncio.to_thread(self.history.record_snapshot, devices)
+            self.persistence_error = None
+        except Exception as exc:
+            self.persistence_error = str(exc)
+
+    def add_event(
+        self,
+        message: str,
+        level: str = "info",
+        device_id: str | None = None,
+        *,
+        persist: bool = True,
+    ) -> NetworkEvent:
         event = NetworkEvent(datetime.now(), message, level)
         self.events.appendleft(event)
         if device_id is not None:
             timeline = self.event_timeline_by_device.setdefault(device_id, deque(maxlen=20))
             timeline.appendleft((event.timestamp.isoformat(timespec="seconds"), level, message))
-        if self.history is not None:
+        if not persist:
+            self._deferred_events.append((event, device_id))
+        elif self.history is not None:
             try:
                 self.history.record_event(event, device_id)
+                self.persistence_error = None
+            except Exception as exc:
+                self.persistence_error = str(exc)
+        return event
+
+    async def add_event_async(
+        self, message: str, level: str = "info", device_id: str | None = None
+    ) -> NetworkEvent:
+        event = self.add_event(message, level, device_id, persist=False)
+        await self._flush_deferred_events()
+        return event
+
+    async def _flush_deferred_events(self) -> None:
+        events = self._deferred_events
+        self._deferred_events = []
+        if self.history is None:
+            return
+        for event, device_id in events:
+            try:
+                await asyncio.to_thread(self.history.record_event, event, device_id)
                 self.persistence_error = None
             except Exception as exc:
                 self.persistence_error = str(exc)

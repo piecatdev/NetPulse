@@ -6,7 +6,9 @@ import contextlib
 import ipaddress
 import math
 import sys
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import TypeVar
 
 from rich.console import Console
 from rich.table import Table
@@ -26,6 +28,8 @@ from .persistence import DeviceRegistry, RegistryError
 from .state import NetworkState
 from .storage import HistoryStore
 from .ui import Dashboard
+
+T = TypeVar("T")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -283,7 +287,9 @@ async def _run_dashboard_workers(
 
 
 async def run_initial_scan(engine: NetworkEngine, state: NetworkState) -> None:
-    state.add_event("Initial manual scan requested", "info")
+    await _complete_on_cancellation(
+        state.add_event_async("Initial manual scan requested", "info")
+    )
     await _run_scan(engine, state)
 
 
@@ -634,7 +640,7 @@ async def run_once(
         f"mode={'deep' if engine.deep_scan else 'arp-first'} hosts={engine.host_count}"
     )
     results = await engine.arp_snapshot() if arp_only else await engine.scan_once()
-    state.apply_scan_results(results)
+    await _complete_on_cancellation(state.apply_scan_results_async(results))
 
     if plain:
         _print_plain_devices(state)
@@ -693,7 +699,7 @@ async def run_diagnostics(console: Console, engine: NetworkEngine, state: Networ
         console.print(f"  arp {item.ip} {item.mac}")
 
     results = await engine.scan_once()
-    state.apply_scan_results(results)
+    await _complete_on_cancellation(state.apply_scan_results_async(results))
     console.print(f"scan results: {len(results)}")
     console.print(f"state devices: {len(state.devices)}")
     for device in state.sorted_devices()[:10]:
@@ -744,19 +750,35 @@ async def _run_scan(engine: NetworkEngine, state: NetworkState, *, live=None) ->
     if live is not None:
         live.refresh()
     try:
-        state.add_event(
-            f"Scan started ({'deep' if engine.deep_scan else 'arp-first'}, up to {engine.host_count} hosts)",
-            "info",
+        await _complete_on_cancellation(
+            state.add_event_async(
+                f"Scan started ({'deep' if engine.deep_scan else 'arp-first'}, up to {engine.host_count} hosts)",
+                "info",
+            )
         )
         results = await engine.scan_once()
-        state.apply_scan_results(results)
-        state.add_event(f"Scan complete: {len(results)} active hosts", "info")
+        await _complete_on_cancellation(state.apply_scan_results_async(results))
+        await _complete_on_cancellation(
+            state.add_event_async(f"Scan complete: {len(results)} active hosts", "info")
+        )
     except Exception as exc:
-        state.add_event(f"Scan error: {exc}", "error")
+        await _complete_on_cancellation(
+            state.add_event_async(f"Scan error: {exc}", "error")
+        )
     finally:
         state.scanning = False
         if live is not None:
             live.refresh()
+
+
+async def _complete_on_cancellation(awaitable: Awaitable[T]) -> T:
+    """Finish an in-flight persistence operation before propagating cancellation."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 async def _input_loop(
@@ -769,7 +791,7 @@ async def _input_loop(
     input_log: Path | None = None,
 ) -> None:
     keyboard = LineKeyboardInput() if line_input else KeyboardInput()
-    state.add_event("Input loop started", "info")
+    await _complete_on_cancellation(state.add_event_async("Input loop started", "info"))
     _write_input_log(input_log, "input-loop-started")
     if live is not None:
         live.refresh()
@@ -781,11 +803,15 @@ async def _input_loop(
         _write_input_log(input_log, f"action={action.name}")
         if action.name == "quit":
             state.last_action = "quit"
-            state.add_event("Shutdown requested", "info")
+            await _complete_on_cancellation(
+                state.add_event_async("Shutdown requested", "info")
+            )
             stop_event.set()
         elif action.name == "refresh":
             state.last_action = "refresh"
-            state.add_event("Manual scan requested", "info")
+            await _complete_on_cancellation(
+                state.add_event_async("Manual scan requested", "info")
+            )
             scan_now.set()
         elif action.name == "view":
             state.cycle_view()

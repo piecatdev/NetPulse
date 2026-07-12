@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
 import tempfile
 from pathlib import Path
@@ -101,6 +103,69 @@ class NetworkStateTests(unittest.TestCase):
         state.move_attention_selection(1)
 
         self.assertEqual(state.selected_device().ip, expected_next)
+
+
+class AsyncNetworkStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_scan_keeps_loop_responsive_and_orders_history_work(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        calls: list[tuple[str, int]] = []
+
+        class BlockingHistory:
+            def device_records(self):
+                calls.append(("read", threading.get_ident()))
+                started.set()
+                release.wait()
+                return []
+
+            def record_event(self, event, device_id=None):
+                calls.append((f"event:{event.message}", threading.get_ident()))
+
+            def record_snapshot(self, devices):
+                calls.append(("snapshot", threading.get_ident()))
+
+        loop_thread = threading.get_ident()
+        state = NetworkState(DeviceRegistry(Path("unused.json")), history=BlockingHistory())
+        task = asyncio.create_task(
+            state.apply_scan_results_async(
+                [ScanResult("192.168.1.20", "aa:bb:cc:dd:ee:20", 10.0)]
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+
+        loop_progressed = False
+        await asyncio.sleep(0)
+        loop_progressed = True
+        self.assertFalse(task.done())
+        release.set()
+        await task
+
+        self.assertTrue(loop_progressed)
+        self.assertEqual(calls[0][0], "read")
+        self.assertTrue(calls[1][0].startswith("event:Node"))
+        self.assertTrue(calls[2][0].startswith("event:Alert"))
+        self.assertEqual(calls[3][0], "snapshot")
+        self.assertTrue(all(thread_id != loop_thread for _, thread_id in calls))
+
+    async def test_async_snapshot_failure_sets_persistence_error(self) -> None:
+        class FailingHistory:
+            def device_records(self):
+                return []
+
+            def record_event(self, event, device_id=None):
+                return None
+
+            def record_snapshot(self, devices):
+                raise OSError("disk unavailable")
+
+        state = NetworkState(DeviceRegistry(Path("unused.json")), history=FailingHistory())
+
+        await state.apply_scan_results_async(
+            [ScanResult("192.168.1.20", "aa:bb:cc:dd:ee:20", 10.0)]
+        )
+
+        self.assertEqual(state.persistence_error, "disk unavailable")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,37 @@ from netpulse.storage import HistoryStore
 
 
 class HistoryStoreTests(unittest.TestCase):
+    def test_close_waits_for_an_active_write(self) -> None:
+        store = HistoryStore(Path("unused.db"))
+        connection = MagicMock()
+        write_started = threading.Event()
+        release_write = threading.Event()
+        close_called = threading.Event()
+
+        def block_write(*args, **kwargs):
+            write_started.set()
+            release_write.wait()
+
+        connection.execute.side_effect = block_write
+        connection.close.side_effect = close_called.set
+        store.connection = connection
+        event = NetworkEvent(datetime.now(), "test event", "info")
+
+        writer = threading.Thread(target=store.record_event, args=(event,))
+        writer.start()
+        self.assertTrue(write_started.wait(timeout=1))
+        closer = threading.Thread(target=store.close)
+        closer.start()
+
+        self.assertFalse(close_called.wait(timeout=0.05))
+        release_write.set()
+        writer.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertTrue(close_called.is_set())
+
     def test_snapshot_batches_device_and_metric_writes(self) -> None:
         store = HistoryStore(Path("unused.db"))
         connection = MagicMock()
