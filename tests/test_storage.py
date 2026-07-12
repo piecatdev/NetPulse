@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -10,6 +11,51 @@ from netpulse.storage import HistoryStore
 
 
 class HistoryStoreTests(unittest.TestCase):
+    def test_snapshot_rolls_back_all_writes_after_intermediate_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = HistoryStore(Path(directory) / "history.db")
+            store.connect()
+            try:
+                first = Device(
+                    ip="192.168.1.20",
+                    mac="aa:bb:cc:dd:ee:20",
+                    name="Workstation",
+                )
+                second = Device(
+                    ip="192.168.1.21",
+                    mac="aa:bb:cc:dd:ee:21",
+                    name="Printer",
+                )
+                conn = store._conn()
+                conn.execute(
+                    """
+                    CREATE TRIGGER fail_second_metric
+                    BEFORE INSERT ON metrics
+                    WHEN (SELECT COUNT(*) FROM metrics) = 1
+                    BEGIN
+                        SELECT RAISE(ABORT, 'injected metric failure');
+                    END
+                    """
+                )
+                conn.commit()
+
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "injected metric failure"):
+                    store.record_snapshot([first, second])
+
+                store.record_event(
+                    NetworkEvent(first.last_seen, "Snapshot failed", "warning"),
+                    first.id,
+                )
+                devices = conn.execute("SELECT device_id FROM devices").fetchall()
+                metrics = conn.execute("SELECT device_id FROM metrics").fetchall()
+                events = conn.execute("SELECT message FROM events").fetchall()
+            finally:
+                store.close()
+
+        self.assertEqual(devices, [])
+        self.assertEqual(metrics, [])
+        self.assertEqual(events, [("Snapshot failed",)])
+
     def test_records_snapshot_and_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = HistoryStore(Path(directory) / "history.db")
@@ -25,12 +71,17 @@ class HistoryStoreTests(unittest.TestCase):
                 store.record_event(NetworkEvent(device.last_seen, "Node Workstation connected", "success"), device.id)
 
                 timeline = store.timeline(device.id)
+                conn = store._conn()
+                devices = conn.execute("SELECT device_id FROM devices").fetchall()
+                metrics = conn.execute("SELECT device_id FROM metrics").fetchall()
             finally:
                 store.close()
 
         self.assertEqual(len(timeline), 1)
         self.assertEqual(timeline[0][1], "success")
         self.assertIn("Workstation", timeline[0][2])
+        self.assertEqual(devices, [(device.id,)])
+        self.assertEqual(metrics, [(device.id,)])
 
     def test_returns_device_memory_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
