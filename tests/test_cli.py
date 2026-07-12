@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import tempfile
@@ -9,7 +10,13 @@ from pathlib import Path
 
 from rich.console import Console
 
-from netpulse.cli import _baseline_findings, _memory_scroll_offset, build_parser, run_history_command
+from netpulse.cli import (
+    _baseline_findings,
+    _memory_scroll_offset,
+    _run_dashboard_workers,
+    build_parser,
+    run_history_command,
+)
 from netpulse.memory import DeviceMemoryRecord
 from netpulse.models import Device, NetworkEvent
 from netpulse.storage import HistoryStore
@@ -265,6 +272,74 @@ class CliParserTests(unittest.TestCase):
         self.assertIn("ip", kinds)
         self.assertIn("risk", kinds)
         self.assertIn("missing", kinds)
+
+
+class DashboardWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_normal_quit_cancels_workers_quietly(self) -> None:
+        stop_event = asyncio.Event()
+        worker_cancelled = asyncio.Event()
+
+        async def request_quit() -> None:
+            stop_event.set()
+
+        async def worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                worker_cancelled.set()
+
+        quit_task = asyncio.create_task(request_quit())
+        worker_task = asyncio.create_task(worker())
+        await _run_dashboard_workers(stop_event, quit_task, worker_task)
+
+        self.assertTrue(worker_cancelled.is_set())
+        self.assertTrue(worker_task.cancelled())
+
+    async def test_scan_failure_is_propagated_and_input_is_cancelled(self) -> None:
+        stop_event = asyncio.Event()
+        sibling_cancelled = asyncio.Event()
+
+        async def fail_scan() -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("scan failed")
+
+        async def input_worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                sibling_cancelled.set()
+
+        scan_task = asyncio.create_task(fail_scan())
+        input_task = asyncio.create_task(input_worker())
+        with self.assertRaisesRegex(RuntimeError, "scan failed"):
+            await _run_dashboard_workers(stop_event, scan_task, input_task)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(sibling_cancelled.is_set())
+        self.assertTrue(input_task.cancelled())
+
+    async def test_input_failure_is_propagated_and_scan_is_cancelled(self) -> None:
+        stop_event = asyncio.Event()
+        sibling_cancelled = asyncio.Event()
+
+        async def scan_worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                sibling_cancelled.set()
+
+        async def fail_input() -> None:
+            await asyncio.sleep(0)
+            raise OSError("input failed")
+
+        scan_task = asyncio.create_task(scan_worker())
+        input_task = asyncio.create_task(fail_input())
+        with self.assertRaisesRegex(OSError, "input failed"):
+            await _run_dashboard_workers(stop_event, scan_task, input_task)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(sibling_cancelled.is_set())
+        self.assertTrue(scan_task.cancelled())
 
 
 if __name__ == "__main__":

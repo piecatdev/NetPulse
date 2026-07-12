@@ -214,9 +214,7 @@ async def run(args: argparse.Namespace) -> None:
                     input_log=args.input_log,
                 )
             )
-            with contextlib.suppress(asyncio.CancelledError):
-                await stop_event.wait()
-            await _cancel_dashboard_tasks(scan_task, input_task)
+            await _run_dashboard_workers(stop_event, scan_task, input_task)
     except KeyboardInterrupt:
         console.print("\n[bold yellow]NetPulse interrupted by user[/]")
     finally:
@@ -230,6 +228,29 @@ async def _cancel_dashboard_tasks(*tasks: asyncio.Task | None) -> None:
     for task in active_tasks:
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+async def _run_dashboard_workers(
+    stop_event: asyncio.Event,
+    *workers: asyncio.Task,
+) -> None:
+    """Run dashboard workers until shutdown or the first worker terminates."""
+    stop_task = asyncio.create_task(stop_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (stop_task, *workers),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_event.is_set():
+            return
+
+        completed_workers = [task for task in done if task is not stop_task]
+        for task in completed_workers:
+            task.result()
+        raise RuntimeError("A dashboard worker stopped before shutdown was requested")
+    finally:
+        stop_event.set()
+        await _cancel_dashboard_tasks(stop_task, *workers)
 
 
 async def run_initial_scan(engine: NetworkEngine, state: NetworkState) -> None:
@@ -270,9 +291,7 @@ async def run_demo(
                     line_input=line_input,
                 )
             )
-            with contextlib.suppress(asyncio.CancelledError):
-                await stop_event.wait()
-            await _cancel_dashboard_tasks(input_task)
+            await _run_dashboard_workers(stop_event, input_task)
     except KeyboardInterrupt:
         console.print("\n[bold yellow]NetPulse demo closed[/]")
 

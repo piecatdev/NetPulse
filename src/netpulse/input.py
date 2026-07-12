@@ -64,8 +64,11 @@ class KeyboardInput:
 
     @staticmethod
     def _poll_posix_key() -> str:
-        fd = sys.stdin.fileno()
-        if not sys.stdin.isatty():
+        try:
+            if not sys.stdin.isatty():
+                return ""
+            fd = sys.stdin.fileno()
+        except (AttributeError, OSError, ValueError):
             return ""
         import select
         import termios
