@@ -7,7 +7,8 @@ import re
 import socket
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
+from itertools import islice
 
 from .models import ScanResult
 from .state import NetworkState
@@ -16,6 +17,8 @@ ARP_LINE = re.compile(
     r"(?P<ip>\d+\.\d+\.\d+\.\d+).*?"
     r"(?P<mac>(?:[0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2})"
 )
+
+MAX_SCAN_HOSTS = 4096
 
 
 class NetworkEngine:
@@ -49,16 +52,15 @@ class NetworkEngine:
             await asyncio.sleep(self.interval)
 
     async def scan_once(self) -> list[ScanResult]:
-        semaphore = asyncio.Semaphore(self.concurrency)
         macs_by_ip = await self._read_arp_table()
         targets = self._scan_targets(macs_by_ip)
 
-        async def probe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ScanResult | None:
-            async with semaphore:
-                return await self._ping_host(str(ip))
-
-        probes = [probe(ip) for ip in targets]
-        results = await asyncio.gather(*probes)
+        results: list[ScanResult | None] = []
+        target_iterator = iter(targets)
+        while batch := tuple(islice(target_iterator, self.concurrency)):
+            results.extend(
+                await asyncio.gather(*(self._ping_host(str(ip)) for ip in batch))
+            )
 
         enriched: list[ScanResult] = []
         seen_ips: set[str] = set()
@@ -86,9 +88,17 @@ class NetworkEngine:
             if ipaddress.ip_address(ip) in self.network
         ]
 
-    def _scan_targets(self, macs_by_ip: dict[str, str]) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    def _scan_targets(
+        self, macs_by_ip: dict[str, str]
+    ) -> Iterable[ipaddress.IPv4Address | ipaddress.IPv6Address]:
         if self.deep_scan or not macs_by_ip:
-            return list(self.network.hosts())
+            if self.host_count > MAX_SCAN_HOSTS:
+                reason = "deep scan" if self.deep_scan else "empty ARP fallback"
+                raise ValueError(
+                    f"{reason} requires scanning {self.host_count} hosts; "
+                    f"maximum is {MAX_SCAN_HOSTS}"
+                )
+            return self.network.hosts()
 
         targets = {
             ipaddress.ip_address(ip)

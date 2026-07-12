@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest.mock import AsyncMock
 
+from netpulse.models import ScanResult
 from netpulse.network import NetworkEngine
 
 
@@ -127,6 +130,74 @@ destination: default
         self.assertTrue(engine._ip_in_network("192.168.1.1"))
         self.assertFalse(engine._ip_in_network("10.0.0.1"))
         self.assertFalse(engine._ip_in_network("not-an-ip"))
+
+
+class NetworkEngineScanTests(unittest.IsolatedAsyncioTestCase):
+    async def test_broad_ipv4_deep_scan_is_rejected_before_probing(self) -> None:
+        engine = NetworkEngine("10.0.0.0/8", deep_scan=True)
+        engine._read_arp_table = AsyncMock(return_value={})
+        engine._ping_host = AsyncMock()
+
+        with self.assertRaisesRegex(ValueError, "maximum"):
+            await engine.scan_once()
+
+        engine._ping_host.assert_not_awaited()
+
+    async def test_ipv6_64_deep_scan_is_rejected_before_probing(self) -> None:
+        engine = NetworkEngine("2001:db8::/64", deep_scan=True)
+        engine._read_arp_table = AsyncMock(return_value={})
+        engine._ping_host = AsyncMock()
+
+        with self.assertRaisesRegex(ValueError, "maximum"):
+            await engine.scan_once()
+
+        engine._ping_host.assert_not_awaited()
+
+    async def test_probe_concurrency_is_bounded(self) -> None:
+        engine = NetworkEngine("192.0.2.0/28", concurrency=3, deep_scan=True)
+        engine._read_arp_table = AsyncMock(return_value={})
+        active = 0
+        maximum_active = 0
+
+        async def probe(ip: str) -> ScanResult:
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return ScanResult(ip=ip, mac="", latency_ms=1.0, hostname=None)
+
+        engine._ping_host = probe
+
+        results = await engine.scan_once()
+
+        self.assertEqual(len(results), 14)
+        self.assertEqual(maximum_active, 3)
+
+    async def test_small_deep_scan_completes(self) -> None:
+        engine = NetworkEngine("192.0.2.0/30", deep_scan=True)
+        engine._read_arp_table = AsyncMock(return_value={})
+        engine._ping_host = AsyncMock(
+            side_effect=lambda ip: ScanResult(
+                ip=ip, mac="", latency_ms=1.0, hostname=None
+            )
+        )
+
+        results = await engine.scan_once()
+
+        self.assertEqual(
+            [result.ip for result in results], ["192.0.2.1", "192.0.2.2"]
+        )
+
+    async def test_empty_arp_does_not_expand_oversized_network(self) -> None:
+        engine = NetworkEngine("10.0.0.0/8")
+        engine._read_arp_table = AsyncMock(return_value={})
+        engine._ping_host = AsyncMock()
+
+        with self.assertRaisesRegex(ValueError, "empty ARP fallback"):
+            await engine.scan_once()
+
+        engine._ping_host.assert_not_awaited()
 
 
 if __name__ == "__main__":
