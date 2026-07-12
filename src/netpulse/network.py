@@ -123,9 +123,14 @@ class NetworkEngine:
         try:
             return_code = await asyncio.wait_for(process.wait(), timeout=self.timeout + 0.5)
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            await self._reap_process(process)
             return None
+        except BaseException:
+            try:
+                await self._reap_process(process)
+            except BaseException:
+                pass
+            raise
 
         if return_code != 0:
             return None
@@ -133,6 +138,15 @@ class NetworkEngine:
         latency_ms = (time.perf_counter() - started) * 1000
         hostname = await asyncio.to_thread(self._resolve_hostname, ip) if self.resolve_names else None
         return ScanResult(ip=ip, mac="", latency_ms=latency_ms, hostname=hostname)
+
+    @staticmethod
+    async def _reap_process(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        try:
+            process.kill()
+        finally:
+            await process.wait()
 
     def _ping_command(self, ip: str, system: str) -> list[str]:
         timeout_ms = max(1, int(self.timeout * 1000))

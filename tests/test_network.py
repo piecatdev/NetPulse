@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from netpulse.models import ScanResult
 from netpulse.network import NetworkEngine
@@ -132,7 +132,7 @@ destination: default
         self.assertFalse(engine._ip_in_network("not-an-ip"))
 
 
-class NetworkEngineScanTests(unittest.IsolatedAsyncioTestCase):
+class NetworkEngineScanRejectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_broad_ipv4_deep_scan_is_rejected_before_probing(self) -> None:
         engine = NetworkEngine("10.0.0.0/8", deep_scan=True)
         engine._read_arp_table = AsyncMock(return_value={})
@@ -143,6 +143,103 @@ class NetworkEngineScanTests(unittest.IsolatedAsyncioTestCase):
 
         engine._ping_host.assert_not_awaited()
 
+
+class NetworkEnginePingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.engine = NetworkEngine("192.0.2.0/30")
+
+    async def test_successful_ping_does_not_kill_exited_process(self) -> None:
+        process = MagicMock()
+        process.returncode = 0
+        process.wait = AsyncMock(return_value=0)
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+            result = await self.engine._ping_host("192.0.2.1")
+
+        self.assertIsNotNone(result)
+        process.kill.assert_not_called()
+        process.wait.assert_awaited_once()
+
+    async def test_nonzero_ping_does_not_kill_exited_process(self) -> None:
+        process = MagicMock()
+        process.returncode = 1
+        process.wait = AsyncMock(return_value=1)
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+            result = await self.engine._ping_host("192.0.2.1")
+
+        self.assertIsNone(result)
+        process.kill.assert_not_called()
+        process.wait.assert_awaited_once()
+
+    async def test_timed_out_ping_is_killed_and_reaped(self) -> None:
+        process = MagicMock()
+        process.returncode = None
+        process.wait = AsyncMock(side_effect=[asyncio.TimeoutError, -9])
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+            result = await self.engine._ping_host("192.0.2.1")
+
+        self.assertIsNone(result)
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.await_count, 2)
+
+    async def test_cancelled_ping_is_killed_reaped_and_propagated(self) -> None:
+        process = MagicMock()
+        process.returncode = None
+        waiting = asyncio.Event()
+        wait_calls = 0
+
+        async def wait() -> int:
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                waiting.set()
+                await asyncio.Future()
+            return -9
+
+        process.wait = AsyncMock(side_effect=wait)
+        create_process = AsyncMock(return_value=process)
+
+        with patch("asyncio.create_subprocess_exec", create_process):
+            task = asyncio.create_task(self.engine._ping_host("192.0.2.1"))
+            await waiting.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.await_count, 2)
+
+    async def test_cleanup_failure_does_not_mask_cancellation(self) -> None:
+        process = MagicMock()
+        process.returncode = None
+        waiting = asyncio.Event()
+        wait_calls = 0
+
+        async def wait() -> int:
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                waiting.set()
+                await asyncio.Future()
+            return -9
+
+        process.wait = AsyncMock(side_effect=wait)
+        process.kill.side_effect = RuntimeError("cleanup failed")
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+            task = asyncio.create_task(self.engine._ping_host("192.0.2.1"))
+            await waiting.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.await_count, 2)
+
+
+class NetworkEngineScanTests(unittest.IsolatedAsyncioTestCase):
     async def test_ipv6_64_deep_scan_is_rejected_before_probing(self) -> None:
         engine = NetworkEngine("2001:db8::/64", deep_scan=True)
         engine._read_arp_table = AsyncMock(return_value={})
