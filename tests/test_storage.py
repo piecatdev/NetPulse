@@ -5,12 +5,35 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from netpulse.models import Device, NetworkEvent
 from netpulse.storage import HistoryStore
 
 
 class HistoryStoreTests(unittest.TestCase):
+    def test_snapshot_batches_device_and_metric_writes(self) -> None:
+        store = HistoryStore(Path("unused.db"))
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        store.connection = connection
+        devices = [
+            Device(
+                ip=f"192.168.1.{index}",
+                mac=f"aa:bb:cc:dd:ee:{index:02x}",
+                name=f"Device {index}",
+            )
+            for index in (20, 21)
+        ]
+
+        store.record_snapshot(devices)
+
+        self.assertEqual(connection.executemany.call_count, 2)
+        device_rows = connection.executemany.call_args_list[0].args[1]
+        metric_rows = connection.executemany.call_args_list[1].args[1]
+        self.assertEqual([row[0] for row in device_rows], [device.id for device in devices])
+        self.assertEqual([row[0] for row in metric_rows], [device.id for device in devices])
+
     def test_snapshot_rolls_back_all_writes_after_intermediate_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = HistoryStore(Path(directory) / "history.db")

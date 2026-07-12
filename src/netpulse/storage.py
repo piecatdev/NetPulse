@@ -31,25 +31,26 @@ class HistoryStore:
     def record_snapshot(self, devices: Iterable[Device]) -> None:
         conn = self._conn()
         now = datetime.now().isoformat(timespec="seconds")
+        rows = list(devices)
         with conn:
-            for device in devices:
-                conn.execute(
-                    """
-                    INSERT INTO devices (
-                        device_id, mac, ip, name, vendor, device_type, risk_label,
-                        first_seen, last_seen, known
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id) DO UPDATE SET
-                        mac=excluded.mac,
-                        ip=excluded.ip,
-                        name=excluded.name,
-                        vendor=excluded.vendor,
-                        device_type=excluded.device_type,
-                        risk_label=excluded.risk_label,
-                        last_seen=excluded.last_seen,
-                        known=excluded.known
-                    """,
+            conn.executemany(
+                """
+                INSERT INTO devices (
+                    device_id, mac, ip, name, vendor, device_type, risk_label,
+                    first_seen, last_seen, known
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    mac=excluded.mac,
+                    ip=excluded.ip,
+                    name=excluded.name,
+                    vendor=excluded.vendor,
+                    device_type=excluded.device_type,
+                    risk_label=excluded.risk_label,
+                    last_seen=excluded.last_seen,
+                    known=excluded.known
+                """,
+                [
                     (
                         device.id,
                         device.mac,
@@ -61,15 +62,20 @@ class HistoryStore:
                         device.first_seen.isoformat(timespec="seconds"),
                         device.last_seen.isoformat(timespec="seconds"),
                         int(device.known),
-                    ),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO metrics (device_id, captured_at, online, latency_ms)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (device.id, now, int(device.online), device.latency_ms),
-                )
+                    )
+                    for device in rows
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO metrics (device_id, captured_at, online, latency_ms)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (device.id, now, int(device.online), device.latency_ms)
+                    for device in rows
+                ],
+            )
 
     def record_event(self, event: NetworkEvent, device_id: str | None = None) -> None:
         conn = self._conn()
