@@ -113,6 +113,11 @@ For a deeper subnet scan:
 netpulse 192.168.1.0/24 --deep-scan
 ```
 
+Networks are limited to 4,096 scan hosts. NetPulse accepts up to 256 concurrent
+probes, a 60-second ping timeout, and a 3,600-second watch interval. If the ARP
+cache is empty, discovery falls back to scanning the subnet only within the
+same host ceiling; larger CIDRs are rejected before scanning.
+
 For reverse-DNS hostname resolution:
 
 ```bash
@@ -128,6 +133,7 @@ and depends on operating-system networking tools:
 
 - `ping` is used for active probes, with OS-specific timeout flags.
 - `arp -a` is used for the ARP-cache snapshot.
+- IPv4 and IPv6 CIDRs are validated before platform networking tools run.
 - Windows uses `route print` to detect the default gateway when possible.
 - macOS uses `route -n get default` to detect the default gateway when possible.
 - Linux uses `ip route show default` to detect the default gateway when possible.

@@ -21,6 +21,11 @@ from netpulse.cli import (
 )
 from netpulse.memory import DeviceMemoryRecord
 from netpulse.models import Device, NetworkEvent, ScanResult
+from netpulse.network import (
+    MAX_PING_TIMEOUT_SECONDS,
+    MAX_SCAN_CONCURRENCY,
+    MAX_SCAN_INTERVAL_SECONDS,
+)
 from netpulse.storage import HistoryStore
 
 
@@ -59,6 +64,71 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.interval, 2.5)
         self.assertEqual(args.timeout, 0.2)
         self.assertEqual(args.concurrency, 8)
+
+    def test_rejects_non_finite_scan_options(self) -> None:
+        parser = build_parser()
+
+        for option, value in (
+            ("--interval", "nan"),
+            ("--interval", "inf"),
+            ("--timeout", "nan"),
+            ("--timeout", "inf"),
+        ):
+            with self.subTest(option=option, value=value):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args(["192.168.1.0/24", option, value])
+
+    def test_rejects_values_above_scan_limits(self) -> None:
+        parser = build_parser()
+
+        for option, value in (
+            ("--interval", str(MAX_SCAN_INTERVAL_SECONDS + 1)),
+            ("--timeout", str(MAX_PING_TIMEOUT_SECONDS + 1)),
+            ("--concurrency", str(MAX_SCAN_CONCURRENCY + 1)),
+        ):
+            with self.subTest(option=option):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args(["192.168.1.0/24", option, value])
+
+    def test_accepts_maximum_scan_limits(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "192.168.1.0/24",
+                "--interval",
+                str(MAX_SCAN_INTERVAL_SECONDS),
+                "--timeout",
+                str(MAX_PING_TIMEOUT_SECONDS),
+                "--concurrency",
+                str(MAX_SCAN_CONCURRENCY),
+            ]
+        )
+
+        self.assertEqual(args.interval, MAX_SCAN_INTERVAL_SECONDS)
+        self.assertEqual(args.timeout, MAX_PING_TIMEOUT_SECONDS)
+        self.assertEqual(args.concurrency, MAX_SCAN_CONCURRENCY)
+
+    def test_rejects_malformed_cidr(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["not-a-network"])
+
+        self.assertIn("valid IPv4 or IPv6 CIDR", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_accepts_network_at_host_limit_boundary(self) -> None:
+        args = build_parser().parse_args(["192.168.0.0/20"])
+
+        self.assertEqual(args.cidr, "192.168.0.0/20")
+
+    def test_rejects_oversized_ipv4_and_ipv6_networks(self) -> None:
+        for cidr in ("192.168.0.0/19", "2001:db8::/115"):
+            with self.subTest(cidr=cidr):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        build_parser().parse_args([cidr])
 
     def test_accepts_zero_retention_days(self) -> None:
         parser = build_parser()

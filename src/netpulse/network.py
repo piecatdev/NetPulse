@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import math
 import platform
 import re
 import socket
@@ -19,6 +20,17 @@ ARP_LINE = re.compile(
 )
 
 MAX_SCAN_HOSTS = 4096
+MAX_SCAN_CONCURRENCY = 256
+MAX_SCAN_INTERVAL_SECONDS = 3600.0
+MAX_PING_TIMEOUT_SECONDS = 60.0
+
+
+def scan_host_count(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> int:
+    if network.num_addresses <= 2:
+        return network.num_addresses
+    return network.num_addresses - 2
 
 
 class NetworkEngine:
@@ -31,6 +43,7 @@ class NetworkEngine:
         deep_scan: bool = False,
         resolve_names: bool = False,
     ) -> None:
+        self._validate_limits(interval, concurrency, timeout)
         self.network = ipaddress.ip_network(cidr, strict=False)
         self.interval = interval
         self.concurrency = concurrency
@@ -196,9 +209,30 @@ class NetworkEngine:
             return None
 
     def _estimate_host_count(self) -> int:
-        if self.network.num_addresses <= 2:
-            return self.network.num_addresses
-        return self.network.num_addresses - 2
+        return scan_host_count(self.network)
+
+    @staticmethod
+    def _validate_limits(interval: float, concurrency: int, timeout: float) -> None:
+        if (
+            not math.isfinite(interval)
+            or not 0 < interval <= MAX_SCAN_INTERVAL_SECONDS
+        ):
+            raise ValueError(
+                "interval must be greater than 0 and at most "
+                f"{MAX_SCAN_INTERVAL_SECONDS:g} seconds"
+            )
+        if not 0 < concurrency <= MAX_SCAN_CONCURRENCY:
+            raise ValueError(
+                f"concurrency must be greater than 0 and at most {MAX_SCAN_CONCURRENCY}"
+            )
+        if (
+            not math.isfinite(timeout)
+            or not 0 < timeout <= MAX_PING_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "timeout must be greater than 0 and at most "
+                f"{MAX_PING_TIMEOUT_SECONDS:g} seconds"
+            )
 
     def _detect_gateway_ip(self) -> str | None:
         command = self._gateway_command(platform.system().lower())

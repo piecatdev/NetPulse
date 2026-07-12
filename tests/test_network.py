@@ -5,7 +5,12 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from netpulse.models import ScanResult
-from netpulse.network import NetworkEngine
+from netpulse.network import (
+    MAX_PING_TIMEOUT_SECONDS,
+    MAX_SCAN_CONCURRENCY,
+    MAX_SCAN_INTERVAL_SECONDS,
+    NetworkEngine,
+)
 
 
 class NetworkEnginePlatformTests(unittest.TestCase):
@@ -33,11 +38,37 @@ class NetworkEnginePlatformTests(unittest.TestCase):
             ["ping", "-c", "1", "-W", "250", "192.168.1.10"],
         )
 
-    def test_ping_command_never_uses_zero_timeout(self) -> None:
-        engine = NetworkEngine("192.168.1.0/24", timeout=0.0)
+    def test_ping_command_never_emits_zero_timeout(self) -> None:
+        engine = NetworkEngine("192.168.1.0/24", timeout=0.0001)
 
         self.assertEqual(engine._ping_command("192.168.1.10", "darwin")[4], "1")
         self.assertEqual(engine._ping_command("192.168.1.10", "linux")[4], "1")
+
+    def test_engine_rejects_non_finite_and_excessive_limits(self) -> None:
+        invalid_options = (
+            {"interval": float("nan")},
+            {"interval": MAX_SCAN_INTERVAL_SECONDS + 1},
+            {"timeout": float("inf")},
+            {"timeout": MAX_PING_TIMEOUT_SECONDS + 1},
+            {"concurrency": MAX_SCAN_CONCURRENCY + 1},
+        )
+
+        for options in invalid_options:
+            with self.subTest(options=options):
+                with self.assertRaises(ValueError):
+                    NetworkEngine("192.168.1.0/24", **options)
+
+    def test_engine_accepts_maximum_limits(self) -> None:
+        engine = NetworkEngine(
+            "192.168.1.0/24",
+            interval=MAX_SCAN_INTERVAL_SECONDS,
+            timeout=MAX_PING_TIMEOUT_SECONDS,
+            concurrency=MAX_SCAN_CONCURRENCY,
+        )
+
+        self.assertEqual(engine.interval, MAX_SCAN_INTERVAL_SECONDS)
+        self.assertEqual(engine.timeout, MAX_PING_TIMEOUT_SECONDS)
+        self.assertEqual(engine.concurrency, MAX_SCAN_CONCURRENCY)
 
     def test_parse_arp_table_accepts_windows_output(self) -> None:
         text = """

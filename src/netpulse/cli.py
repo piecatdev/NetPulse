@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import ipaddress
+import math
 import sys
 from pathlib import Path
 
@@ -12,7 +14,14 @@ from rich.table import Table
 from .demo import demo_registry, demo_scan_results
 from .input import KeyboardInput, LineKeyboardInput
 from .memory import DeviceMemoryRecord
-from .network import NetworkEngine
+from .network import (
+    MAX_PING_TIMEOUT_SECONDS,
+    MAX_SCAN_CONCURRENCY,
+    MAX_SCAN_HOSTS,
+    MAX_SCAN_INTERVAL_SECONDS,
+    NetworkEngine,
+    scan_host_count,
+)
 from .persistence import DeviceRegistry, RegistryError
 from .state import NetworkState
 from .storage import HistoryStore
@@ -24,10 +33,30 @@ def build_parser() -> argparse.ArgumentParser:
         prog="netpulse",
         description="Monitor device presence and latency on a local network.",
     )
-    parser.add_argument("cidr", nargs="?", help="Network to scan, e.g. 192.168.1.0/24")
-    parser.add_argument("--interval", type=_positive_float, default=5.0, help="Seconds between scans in --watch mode")
-    parser.add_argument("--timeout", type=_positive_float, default=1.0, help="Ping timeout per host")
-    parser.add_argument("--concurrency", type=_positive_int, default=64, help="Concurrent ping probes")
+    parser.add_argument(
+        "cidr",
+        nargs="?",
+        type=_network_cidr,
+        help="Network to scan, e.g. 192.168.1.0/24",
+    )
+    parser.add_argument(
+        "--interval",
+        type=_scan_interval,
+        default=5.0,
+        help=f"Seconds between scans in --watch mode (max {MAX_SCAN_INTERVAL_SECONDS:g})",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=_ping_timeout,
+        default=1.0,
+        help=f"Ping timeout per host (max {MAX_PING_TIMEOUT_SECONDS:g} seconds)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=_scan_concurrency,
+        default=64,
+        help=f"Concurrent ping probes (max {MAX_SCAN_CONCURRENCY})",
+    )
     parser.add_argument(
         "--deep-scan",
         action="store_true",
@@ -813,14 +842,26 @@ def _write_input_log(path: Path | None, line: str) -> None:
         return
 
 
-def _positive_float(value: str) -> float:
+def _bounded_positive_float(value: str, maximum: float) -> float:
     try:
         parsed = float(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be a number") from exc
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be greater than 0")
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("must be a finite number")
+    if not 0 < parsed <= maximum:
+        raise argparse.ArgumentTypeError(
+            f"must be greater than 0 and at most {maximum:g}"
+        )
     return parsed
+
+
+def _scan_interval(value: str) -> float:
+    return _bounded_positive_float(value, MAX_SCAN_INTERVAL_SECONDS)
+
+
+def _ping_timeout(value: str) -> float:
+    return _bounded_positive_float(value, MAX_PING_TIMEOUT_SECONDS)
 
 
 def _positive_int(value: str) -> int:
@@ -831,6 +872,26 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return parsed
+
+
+def _scan_concurrency(value: str) -> int:
+    parsed = _positive_int(value)
+    if parsed > MAX_SCAN_CONCURRENCY:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_SCAN_CONCURRENCY}")
+    return parsed
+
+
+def _network_cidr(value: str) -> str:
+    try:
+        network = ipaddress.ip_network(value, strict=False)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a valid IPv4 or IPv6 CIDR") from exc
+    host_count = scan_host_count(network)
+    if host_count > MAX_SCAN_HOSTS:
+        raise argparse.ArgumentTypeError(
+            f"contains {host_count} hosts; maximum is {MAX_SCAN_HOSTS}"
+        )
+    return str(network)
 
 
 def _non_negative_int(value: str) -> int:
