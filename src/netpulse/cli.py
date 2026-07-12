@@ -719,11 +719,6 @@ async def _run_scan(engine: NetworkEngine, state: NetworkState, *, live=None) ->
             f"Scan started ({'deep' if engine.deep_scan else 'arp-first'}, up to {engine.host_count} hosts)",
             "info",
         )
-        if not engine.deep_scan:
-            snapshot = await engine.arp_snapshot()
-            if snapshot:
-                state.apply_scan_results(snapshot)
-                state.add_event(f"ARP snapshot: {len(snapshot)} visible hosts", "info")
         results = await engine.scan_once()
         state.apply_scan_results(results)
         state.add_event(f"Scan complete: {len(results)} active hosts", "info")

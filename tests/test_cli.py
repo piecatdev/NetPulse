@@ -7,18 +7,20 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from rich.console import Console
 
 from netpulse.cli import (
     _baseline_findings,
     _memory_scroll_offset,
+    _run_scan,
     _run_dashboard_workers,
     build_parser,
     run_history_command,
 )
 from netpulse.memory import DeviceMemoryRecord
-from netpulse.models import Device, NetworkEvent
+from netpulse.models import Device, NetworkEvent, ScanResult
 from netpulse.storage import HistoryStore
 
 
@@ -340,6 +342,29 @@ class DashboardWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stop_event.is_set())
         self.assertTrue(sibling_cancelled.is_set())
         self.assertTrue(scan_task.cancelled())
+
+
+class ScanRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_applies_one_authoritative_scan_result(self) -> None:
+        arp_only_device = ScanResult(
+            ip="192.168.1.24",
+            mac="00:11:32:10:00:24",
+            latency_ms=None,
+            hostname=None,
+        )
+        engine = MagicMock()
+        engine.deep_scan = False
+        engine.host_count = 254
+        engine.scan_once = AsyncMock(return_value=[arp_only_device])
+        state = MagicMock()
+
+        await _run_scan(engine, state)
+
+        engine.scan_once.assert_awaited_once_with()
+        state.apply_scan_results.assert_called_once_with([arp_only_device])
+        self.assertEqual(state.add_event.call_count, 2)
+        self.assertIn("Scan started", state.add_event.call_args_list[0].args[0])
+        self.assertIn("Scan complete", state.add_event.call_args_list[1].args[0])
 
 
 if __name__ == "__main__":

@@ -240,6 +240,33 @@ class NetworkEnginePingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NetworkEngineScanTests(unittest.IsolatedAsyncioTestCase):
+    async def test_arp_is_read_once_and_arp_only_devices_are_preserved(self) -> None:
+        engine = NetworkEngine("192.0.2.0/29")
+        engine._read_arp_table = AsyncMock(
+            return_value={
+                "192.0.2.2": "00:11:22:33:44:02",
+                "192.0.2.3": "00:11:22:33:44:03",
+            }
+        )
+        engine._ping_host = AsyncMock(
+            side_effect=lambda ip: (
+                ScanResult(ip=ip, mac="", latency_ms=1.0, hostname=None)
+                if ip == "192.0.2.2"
+                else None
+            )
+        )
+
+        results = await engine.scan_once()
+
+        engine._read_arp_table.assert_awaited_once_with()
+        self.assertEqual(
+            {(result.ip, result.mac, result.latency_ms) for result in results},
+            {
+                ("192.0.2.2", "00:11:22:33:44:02", 1.0),
+                ("192.0.2.3", "00:11:22:33:44:03", None),
+            },
+        )
+
     async def test_ipv6_64_deep_scan_is_rejected_before_probing(self) -> None:
         engine = NetworkEngine("2001:db8::/64", deep_scan=True)
         engine._read_arp_table = AsyncMock(return_value={})
