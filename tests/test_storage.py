@@ -1,15 +1,116 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from netpulse.models import Device, NetworkEvent
 from netpulse.storage import HistoryStore
 
 
 class HistoryStoreTests(unittest.TestCase):
+    def test_close_waits_for_an_active_write(self) -> None:
+        store = HistoryStore(Path("unused.db"))
+        connection = MagicMock()
+        write_started = threading.Event()
+        release_write = threading.Event()
+        close_called = threading.Event()
+
+        def block_write(*args, **kwargs):
+            write_started.set()
+            release_write.wait()
+
+        connection.execute.side_effect = block_write
+        connection.close.side_effect = close_called.set
+        store.connection = connection
+        event = NetworkEvent(datetime.now(), "test event", "info")
+
+        writer = threading.Thread(target=store.record_event, args=(event,))
+        writer.start()
+        self.assertTrue(write_started.wait(timeout=1))
+        closer = threading.Thread(target=store.close)
+        closer.start()
+
+        self.assertFalse(close_called.wait(timeout=0.05))
+        release_write.set()
+        writer.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertTrue(close_called.is_set())
+
+    def test_snapshot_batches_device_and_metric_writes(self) -> None:
+        store = HistoryStore(Path("unused.db"))
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        store.connection = connection
+        devices = [
+            Device(
+                ip=f"192.168.1.{index}",
+                mac=f"aa:bb:cc:dd:ee:{index:02x}",
+                name=f"Device {index}",
+            )
+            for index in (20, 21)
+        ]
+
+        store.record_snapshot(devices)
+
+        self.assertEqual(connection.executemany.call_count, 2)
+        device_rows = connection.executemany.call_args_list[0].args[1]
+        metric_rows = connection.executemany.call_args_list[1].args[1]
+        self.assertEqual([row[0] for row in device_rows], [device.id for device in devices])
+        self.assertEqual([row[0] for row in metric_rows], [device.id for device in devices])
+
+    def test_snapshot_rolls_back_all_writes_after_intermediate_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = HistoryStore(Path(directory) / "history.db")
+            store.connect()
+            try:
+                first = Device(
+                    ip="192.168.1.20",
+                    mac="aa:bb:cc:dd:ee:20",
+                    name="Workstation",
+                )
+                second = Device(
+                    ip="192.168.1.21",
+                    mac="aa:bb:cc:dd:ee:21",
+                    name="Printer",
+                )
+                conn = store._conn()
+                conn.execute(
+                    """
+                    CREATE TRIGGER fail_second_metric
+                    BEFORE INSERT ON metrics
+                    WHEN (SELECT COUNT(*) FROM metrics) = 1
+                    BEGIN
+                        SELECT RAISE(ABORT, 'injected metric failure');
+                    END
+                    """
+                )
+                conn.commit()
+
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "injected metric failure"):
+                    store.record_snapshot([first, second])
+
+                store.record_event(
+                    NetworkEvent(first.last_seen, "Snapshot failed", "warning"),
+                    first.id,
+                )
+                devices = conn.execute("SELECT device_id FROM devices").fetchall()
+                metrics = conn.execute("SELECT device_id FROM metrics").fetchall()
+                events = conn.execute("SELECT message FROM events").fetchall()
+            finally:
+                store.close()
+
+        self.assertEqual(devices, [])
+        self.assertEqual(metrics, [])
+        self.assertEqual(events, [("Snapshot failed",)])
+
     def test_records_snapshot_and_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = HistoryStore(Path(directory) / "history.db")
@@ -25,12 +126,17 @@ class HistoryStoreTests(unittest.TestCase):
                 store.record_event(NetworkEvent(device.last_seen, "Node Workstation connected", "success"), device.id)
 
                 timeline = store.timeline(device.id)
+                conn = store._conn()
+                devices = conn.execute("SELECT device_id FROM devices").fetchall()
+                metrics = conn.execute("SELECT device_id FROM metrics").fetchall()
             finally:
                 store.close()
 
         self.assertEqual(len(timeline), 1)
         self.assertEqual(timeline[0][1], "success")
         self.assertIn("Workstation", timeline[0][2])
+        self.assertEqual(devices, [(device.id,)])
+        self.assertEqual(metrics, [(device.id,)])
 
     def test_returns_device_memory_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

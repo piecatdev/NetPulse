@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from rich.console import Console
 
-from netpulse.cli import _baseline_findings, _memory_scroll_offset, build_parser, run_history_command
+from netpulse.cli import (
+    _baseline_findings,
+    _complete_on_cancellation,
+    _memory_scroll_offset,
+    _run_scan,
+    _run_dashboard_workers,
+    build_parser,
+    run_history_command,
+)
 from netpulse.memory import DeviceMemoryRecord
-from netpulse.models import Device, NetworkEvent
+from netpulse.models import Device, NetworkEvent, ScanResult
+from netpulse.network import (
+    MAX_PING_TIMEOUT_SECONDS,
+    MAX_SCAN_CONCURRENCY,
+    MAX_SCAN_INTERVAL_SECONDS,
+)
 from netpulse.storage import HistoryStore
 
 
@@ -50,6 +65,71 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.interval, 2.5)
         self.assertEqual(args.timeout, 0.2)
         self.assertEqual(args.concurrency, 8)
+
+    def test_rejects_non_finite_scan_options(self) -> None:
+        parser = build_parser()
+
+        for option, value in (
+            ("--interval", "nan"),
+            ("--interval", "inf"),
+            ("--timeout", "nan"),
+            ("--timeout", "inf"),
+        ):
+            with self.subTest(option=option, value=value):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args(["192.168.1.0/24", option, value])
+
+    def test_rejects_values_above_scan_limits(self) -> None:
+        parser = build_parser()
+
+        for option, value in (
+            ("--interval", str(MAX_SCAN_INTERVAL_SECONDS + 1)),
+            ("--timeout", str(MAX_PING_TIMEOUT_SECONDS + 1)),
+            ("--concurrency", str(MAX_SCAN_CONCURRENCY + 1)),
+        ):
+            with self.subTest(option=option):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args(["192.168.1.0/24", option, value])
+
+    def test_accepts_maximum_scan_limits(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "192.168.1.0/24",
+                "--interval",
+                str(MAX_SCAN_INTERVAL_SECONDS),
+                "--timeout",
+                str(MAX_PING_TIMEOUT_SECONDS),
+                "--concurrency",
+                str(MAX_SCAN_CONCURRENCY),
+            ]
+        )
+
+        self.assertEqual(args.interval, MAX_SCAN_INTERVAL_SECONDS)
+        self.assertEqual(args.timeout, MAX_PING_TIMEOUT_SECONDS)
+        self.assertEqual(args.concurrency, MAX_SCAN_CONCURRENCY)
+
+    def test_rejects_malformed_cidr(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["not-a-network"])
+
+        self.assertIn("valid IPv4 or IPv6 CIDR", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_accepts_network_at_host_limit_boundary(self) -> None:
+        args = build_parser().parse_args(["192.168.0.0/20"])
+
+        self.assertEqual(args.cidr, "192.168.0.0/20")
+
+    def test_rejects_oversized_ipv4_and_ipv6_networks(self) -> None:
+        for cidr in ("192.168.0.0/19", "2001:db8::/115"):
+            with self.subTest(cidr=cidr):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        build_parser().parse_args([cidr])
 
     def test_accepts_zero_retention_days(self) -> None:
         parser = build_parser()
@@ -265,6 +345,117 @@ class CliParserTests(unittest.TestCase):
         self.assertIn("ip", kinds)
         self.assertIn("risk", kinds)
         self.assertIn("missing", kinds)
+
+
+class DashboardWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_normal_quit_cancels_workers_quietly(self) -> None:
+        stop_event = asyncio.Event()
+        worker_cancelled = asyncio.Event()
+
+        async def request_quit() -> None:
+            stop_event.set()
+
+        async def worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                worker_cancelled.set()
+
+        quit_task = asyncio.create_task(request_quit())
+        worker_task = asyncio.create_task(worker())
+        await _run_dashboard_workers(stop_event, quit_task, worker_task)
+
+        self.assertTrue(worker_cancelled.is_set())
+        self.assertTrue(worker_task.cancelled())
+
+    async def test_scan_failure_is_propagated_and_input_is_cancelled(self) -> None:
+        stop_event = asyncio.Event()
+        sibling_cancelled = asyncio.Event()
+
+        async def fail_scan() -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("scan failed")
+
+        async def input_worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                sibling_cancelled.set()
+
+        scan_task = asyncio.create_task(fail_scan())
+        input_task = asyncio.create_task(input_worker())
+        with self.assertRaisesRegex(RuntimeError, "scan failed"):
+            await _run_dashboard_workers(stop_event, scan_task, input_task)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(sibling_cancelled.is_set())
+        self.assertTrue(input_task.cancelled())
+
+    async def test_input_failure_is_propagated_and_scan_is_cancelled(self) -> None:
+        stop_event = asyncio.Event()
+        sibling_cancelled = asyncio.Event()
+
+        async def scan_worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                sibling_cancelled.set()
+
+        async def fail_input() -> None:
+            await asyncio.sleep(0)
+            raise OSError("input failed")
+
+        scan_task = asyncio.create_task(scan_worker())
+        input_task = asyncio.create_task(fail_input())
+        with self.assertRaisesRegex(OSError, "input failed"):
+            await _run_dashboard_workers(stop_event, scan_task, input_task)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(sibling_cancelled.is_set())
+        self.assertTrue(scan_task.cancelled())
+
+
+class ScanRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_waits_for_persistence_to_finish(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def persist() -> None:
+            started.set()
+            await release.wait()
+
+        task = asyncio.create_task(_complete_on_cancellation(persist()))
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+
+        self.assertFalse(task.done())
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def test_refresh_applies_one_authoritative_scan_result(self) -> None:
+        arp_only_device = ScanResult(
+            ip="192.168.1.24",
+            mac="00:11:32:10:00:24",
+            latency_ms=None,
+            hostname=None,
+        )
+        engine = MagicMock()
+        engine.deep_scan = False
+        engine.host_count = 254
+        engine.scan_once = AsyncMock(return_value=[arp_only_device])
+        state = MagicMock()
+        state.add_event_async = AsyncMock()
+        state.apply_scan_results_async = AsyncMock()
+
+        await _run_scan(engine, state)
+
+        engine.scan_once.assert_awaited_once_with()
+        state.apply_scan_results_async.assert_awaited_once_with([arp_only_device])
+        self.assertEqual(state.add_event_async.await_count, 2)
+        self.assertIn("Scan started", state.add_event_async.await_args_list[0].args[0])
+        self.assertIn("Scan complete", state.add_event_async.await_args_list[1].args[0])
 
 
 if __name__ == "__main__":

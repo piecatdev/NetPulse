@@ -17,8 +17,16 @@ class KeyboardInputTests(unittest.TestCase):
 
     def test_posix_poll_returns_empty_for_non_tty_stdin(self) -> None:
         stdin = mock.Mock()
-        stdin.fileno.return_value = 0
         stdin.isatty.return_value = False
+
+        with mock.patch("sys.stdin", stdin):
+            self.assertEqual(KeyboardInput._poll_posix_key(), "")
+        stdin.fileno.assert_not_called()
+
+    def test_posix_poll_returns_empty_when_redirected_stdin_has_no_fileno(self) -> None:
+        stdin = mock.Mock()
+        stdin.isatty.return_value = True
+        stdin.fileno.side_effect = OSError("no file descriptor")
 
         with mock.patch("sys.stdin", stdin):
             self.assertEqual(KeyboardInput._poll_posix_key(), "")

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import math
 import platform
 import re
 import socket
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
+from itertools import islice
 
 from .models import ScanResult
 from .state import NetworkState
@@ -16,6 +18,19 @@ ARP_LINE = re.compile(
     r"(?P<ip>\d+\.\d+\.\d+\.\d+).*?"
     r"(?P<mac>(?:[0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2})"
 )
+
+MAX_SCAN_HOSTS = 4096
+MAX_SCAN_CONCURRENCY = 256
+MAX_SCAN_INTERVAL_SECONDS = 3600.0
+MAX_PING_TIMEOUT_SECONDS = 60.0
+
+
+def scan_host_count(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> int:
+    if network.num_addresses <= 2:
+        return network.num_addresses
+    return network.num_addresses - 2
 
 
 class NetworkEngine:
@@ -28,6 +43,7 @@ class NetworkEngine:
         deep_scan: bool = False,
         resolve_names: bool = False,
     ) -> None:
+        self._validate_limits(interval, concurrency, timeout)
         self.network = ipaddress.ip_network(cidr, strict=False)
         self.interval = interval
         self.concurrency = concurrency
@@ -49,16 +65,15 @@ class NetworkEngine:
             await asyncio.sleep(self.interval)
 
     async def scan_once(self) -> list[ScanResult]:
-        semaphore = asyncio.Semaphore(self.concurrency)
         macs_by_ip = await self._read_arp_table()
         targets = self._scan_targets(macs_by_ip)
 
-        async def probe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ScanResult | None:
-            async with semaphore:
-                return await self._ping_host(str(ip))
-
-        probes = [probe(ip) for ip in targets]
-        results = await asyncio.gather(*probes)
+        results: list[ScanResult | None] = []
+        target_iterator = iter(targets)
+        while batch := tuple(islice(target_iterator, self.concurrency)):
+            results.extend(
+                await asyncio.gather(*(self._ping_host(str(ip)) for ip in batch))
+            )
 
         enriched: list[ScanResult] = []
         seen_ips: set[str] = set()
@@ -86,9 +101,17 @@ class NetworkEngine:
             if ipaddress.ip_address(ip) in self.network
         ]
 
-    def _scan_targets(self, macs_by_ip: dict[str, str]) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    def _scan_targets(
+        self, macs_by_ip: dict[str, str]
+    ) -> Iterable[ipaddress.IPv4Address | ipaddress.IPv6Address]:
         if self.deep_scan or not macs_by_ip:
-            return list(self.network.hosts())
+            if self.host_count > MAX_SCAN_HOSTS:
+                reason = "deep scan" if self.deep_scan else "empty ARP fallback"
+                raise ValueError(
+                    f"{reason} requires scanning {self.host_count} hosts; "
+                    f"maximum is {MAX_SCAN_HOSTS}"
+                )
+            return self.network.hosts()
 
         targets = {
             ipaddress.ip_address(ip)
@@ -113,9 +136,14 @@ class NetworkEngine:
         try:
             return_code = await asyncio.wait_for(process.wait(), timeout=self.timeout + 0.5)
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            await self._reap_process(process)
             return None
+        except BaseException:
+            try:
+                await self._reap_process(process)
+            except BaseException:
+                pass
+            raise
 
         if return_code != 0:
             return None
@@ -123,6 +151,15 @@ class NetworkEngine:
         latency_ms = (time.perf_counter() - started) * 1000
         hostname = await asyncio.to_thread(self._resolve_hostname, ip) if self.resolve_names else None
         return ScanResult(ip=ip, mac="", latency_ms=latency_ms, hostname=hostname)
+
+    @staticmethod
+    async def _reap_process(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        try:
+            process.kill()
+        finally:
+            await process.wait()
 
     def _ping_command(self, ip: str, system: str) -> list[str]:
         timeout_ms = max(1, int(self.timeout * 1000))
@@ -172,9 +209,30 @@ class NetworkEngine:
             return None
 
     def _estimate_host_count(self) -> int:
-        if self.network.num_addresses <= 2:
-            return self.network.num_addresses
-        return self.network.num_addresses - 2
+        return scan_host_count(self.network)
+
+    @staticmethod
+    def _validate_limits(interval: float, concurrency: int, timeout: float) -> None:
+        if (
+            not math.isfinite(interval)
+            or not 0 < interval <= MAX_SCAN_INTERVAL_SECONDS
+        ):
+            raise ValueError(
+                "interval must be greater than 0 and at most "
+                f"{MAX_SCAN_INTERVAL_SECONDS:g} seconds"
+            )
+        if not 0 < concurrency <= MAX_SCAN_CONCURRENCY:
+            raise ValueError(
+                f"concurrency must be greater than 0 and at most {MAX_SCAN_CONCURRENCY}"
+            )
+        if (
+            not math.isfinite(timeout)
+            or not 0 < timeout <= MAX_PING_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "timeout must be greater than 0 and at most "
+                f"{MAX_PING_TIMEOUT_SECONDS:g} seconds"
+            )
 
     def _detect_gateway_ip(self) -> str | None:
         command = self._gateway_command(platform.system().lower())

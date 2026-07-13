@@ -3,8 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import ipaddress
+import math
 import sys
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import TypeVar
 
 from rich.console import Console
 from rich.table import Table
@@ -12,11 +16,20 @@ from rich.table import Table
 from .demo import demo_registry, demo_scan_results
 from .input import KeyboardInput, LineKeyboardInput
 from .memory import DeviceMemoryRecord
-from .network import NetworkEngine
+from .network import (
+    MAX_PING_TIMEOUT_SECONDS,
+    MAX_SCAN_CONCURRENCY,
+    MAX_SCAN_HOSTS,
+    MAX_SCAN_INTERVAL_SECONDS,
+    NetworkEngine,
+    scan_host_count,
+)
 from .persistence import DeviceRegistry, RegistryError
 from .state import NetworkState
 from .storage import HistoryStore
 from .ui import Dashboard
+
+T = TypeVar("T")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,10 +37,30 @@ def build_parser() -> argparse.ArgumentParser:
         prog="netpulse",
         description="Monitor device presence and latency on a local network.",
     )
-    parser.add_argument("cidr", nargs="?", help="Network to scan, e.g. 192.168.1.0/24")
-    parser.add_argument("--interval", type=_positive_float, default=5.0, help="Seconds between scans in --watch mode")
-    parser.add_argument("--timeout", type=_positive_float, default=1.0, help="Ping timeout per host")
-    parser.add_argument("--concurrency", type=_positive_int, default=64, help="Concurrent ping probes")
+    parser.add_argument(
+        "cidr",
+        nargs="?",
+        type=_network_cidr,
+        help="Network to scan, e.g. 192.168.1.0/24",
+    )
+    parser.add_argument(
+        "--interval",
+        type=_scan_interval,
+        default=5.0,
+        help=f"Seconds between scans in --watch mode (max {MAX_SCAN_INTERVAL_SECONDS:g})",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=_ping_timeout,
+        default=1.0,
+        help=f"Ping timeout per host (max {MAX_PING_TIMEOUT_SECONDS:g} seconds)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=_scan_concurrency,
+        default=64,
+        help=f"Concurrent ping probes (max {MAX_SCAN_CONCURRENCY})",
+    )
     parser.add_argument(
         "--deep-scan",
         action="store_true",
@@ -214,9 +247,7 @@ async def run(args: argparse.Namespace) -> None:
                     input_log=args.input_log,
                 )
             )
-            with contextlib.suppress(asyncio.CancelledError):
-                await stop_event.wait()
-            await _cancel_dashboard_tasks(scan_task, input_task)
+            await _run_dashboard_workers(stop_event, scan_task, input_task)
     except KeyboardInterrupt:
         console.print("\n[bold yellow]NetPulse interrupted by user[/]")
     finally:
@@ -232,8 +263,33 @@ async def _cancel_dashboard_tasks(*tasks: asyncio.Task | None) -> None:
             await task
 
 
+async def _run_dashboard_workers(
+    stop_event: asyncio.Event,
+    *workers: asyncio.Task,
+) -> None:
+    """Run dashboard workers until shutdown or the first worker terminates."""
+    stop_task = asyncio.create_task(stop_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (stop_task, *workers),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_event.is_set():
+            return
+
+        completed_workers = [task for task in done if task is not stop_task]
+        for task in completed_workers:
+            task.result()
+        raise RuntimeError("A dashboard worker stopped before shutdown was requested")
+    finally:
+        stop_event.set()
+        await _cancel_dashboard_tasks(stop_task, *workers)
+
+
 async def run_initial_scan(engine: NetworkEngine, state: NetworkState) -> None:
-    state.add_event("Initial manual scan requested", "info")
+    await _complete_on_cancellation(
+        state.add_event_async("Initial manual scan requested", "info")
+    )
     await _run_scan(engine, state)
 
 
@@ -270,9 +326,7 @@ async def run_demo(
                     line_input=line_input,
                 )
             )
-            with contextlib.suppress(asyncio.CancelledError):
-                await stop_event.wait()
-            await _cancel_dashboard_tasks(input_task)
+            await _run_dashboard_workers(stop_event, input_task)
     except KeyboardInterrupt:
         console.print("\n[bold yellow]NetPulse demo closed[/]")
 
@@ -586,7 +640,7 @@ async def run_once(
         f"mode={'deep' if engine.deep_scan else 'arp-first'} hosts={engine.host_count}"
     )
     results = await engine.arp_snapshot() if arp_only else await engine.scan_once()
-    state.apply_scan_results(results)
+    await _complete_on_cancellation(state.apply_scan_results_async(results))
 
     if plain:
         _print_plain_devices(state)
@@ -645,7 +699,7 @@ async def run_diagnostics(console: Console, engine: NetworkEngine, state: Networ
         console.print(f"  arp {item.ip} {item.mac}")
 
     results = await engine.scan_once()
-    state.apply_scan_results(results)
+    await _complete_on_cancellation(state.apply_scan_results_async(results))
     console.print(f"scan results: {len(results)}")
     console.print(f"state devices: {len(state.devices)}")
     for device in state.sorted_devices()[:10]:
@@ -696,24 +750,35 @@ async def _run_scan(engine: NetworkEngine, state: NetworkState, *, live=None) ->
     if live is not None:
         live.refresh()
     try:
-        state.add_event(
-            f"Scan started ({'deep' if engine.deep_scan else 'arp-first'}, up to {engine.host_count} hosts)",
-            "info",
+        await _complete_on_cancellation(
+            state.add_event_async(
+                f"Scan started ({'deep' if engine.deep_scan else 'arp-first'}, up to {engine.host_count} hosts)",
+                "info",
+            )
         )
-        if not engine.deep_scan:
-            snapshot = await engine.arp_snapshot()
-            if snapshot:
-                state.apply_scan_results(snapshot)
-                state.add_event(f"ARP snapshot: {len(snapshot)} visible hosts", "info")
         results = await engine.scan_once()
-        state.apply_scan_results(results)
-        state.add_event(f"Scan complete: {len(results)} active hosts", "info")
+        await _complete_on_cancellation(state.apply_scan_results_async(results))
+        await _complete_on_cancellation(
+            state.add_event_async(f"Scan complete: {len(results)} active hosts", "info")
+        )
     except Exception as exc:
-        state.add_event(f"Scan error: {exc}", "error")
+        await _complete_on_cancellation(
+            state.add_event_async(f"Scan error: {exc}", "error")
+        )
     finally:
         state.scanning = False
         if live is not None:
             live.refresh()
+
+
+async def _complete_on_cancellation(awaitable: Awaitable[T]) -> T:
+    """Finish an in-flight persistence operation before propagating cancellation."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 async def _input_loop(
@@ -726,7 +791,7 @@ async def _input_loop(
     input_log: Path | None = None,
 ) -> None:
     keyboard = LineKeyboardInput() if line_input else KeyboardInput()
-    state.add_event("Input loop started", "info")
+    await _complete_on_cancellation(state.add_event_async("Input loop started", "info"))
     _write_input_log(input_log, "input-loop-started")
     if live is not None:
         live.refresh()
@@ -738,11 +803,15 @@ async def _input_loop(
         _write_input_log(input_log, f"action={action.name}")
         if action.name == "quit":
             state.last_action = "quit"
-            state.add_event("Shutdown requested", "info")
+            await _complete_on_cancellation(
+                state.add_event_async("Shutdown requested", "info")
+            )
             stop_event.set()
         elif action.name == "refresh":
             state.last_action = "refresh"
-            state.add_event("Manual scan requested", "info")
+            await _complete_on_cancellation(
+                state.add_event_async("Manual scan requested", "info")
+            )
             scan_now.set()
         elif action.name == "view":
             state.cycle_view()
@@ -799,14 +868,26 @@ def _write_input_log(path: Path | None, line: str) -> None:
         return
 
 
-def _positive_float(value: str) -> float:
+def _bounded_positive_float(value: str, maximum: float) -> float:
     try:
         parsed = float(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be a number") from exc
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be greater than 0")
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("must be a finite number")
+    if not 0 < parsed <= maximum:
+        raise argparse.ArgumentTypeError(
+            f"must be greater than 0 and at most {maximum:g}"
+        )
     return parsed
+
+
+def _scan_interval(value: str) -> float:
+    return _bounded_positive_float(value, MAX_SCAN_INTERVAL_SECONDS)
+
+
+def _ping_timeout(value: str) -> float:
+    return _bounded_positive_float(value, MAX_PING_TIMEOUT_SECONDS)
 
 
 def _positive_int(value: str) -> int:
@@ -817,6 +898,26 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return parsed
+
+
+def _scan_concurrency(value: str) -> int:
+    parsed = _positive_int(value)
+    if parsed > MAX_SCAN_CONCURRENCY:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_SCAN_CONCURRENCY}")
+    return parsed
+
+
+def _network_cidr(value: str) -> str:
+    try:
+        network = ipaddress.ip_network(value, strict=False)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a valid IPv4 or IPv6 CIDR") from exc
+    host_count = scan_host_count(network)
+    if host_count > MAX_SCAN_HOSTS:
+        raise argparse.ArgumentTypeError(
+            f"contains {host_count} hosts; maximum is {MAX_SCAN_HOSTS}"
+        )
+    return str(network)
 
 
 def _non_negative_int(value: str) -> int:

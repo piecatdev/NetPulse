@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,78 +15,89 @@ class HistoryStore:
         self.path = path
         self.retention_days = retention_days
         self.connection: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     def connect(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path, check_same_thread=False)
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA synchronous=NORMAL")
-        self._migrate()
-        self.prune_history()
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(self.path, check_same_thread=False)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA synchronous=NORMAL")
+            self._migrate()
+            self.prune_history()
 
     def close(self) -> None:
-        if self.connection is not None:
-            self.connection.close()
-            self.connection = None
+        with self._lock:
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
 
     def record_snapshot(self, devices: Iterable[Device]) -> None:
-        conn = self._conn()
-        now = datetime.now().isoformat(timespec="seconds")
-        for device in devices:
-            conn.execute(
-                """
-                INSERT INTO devices (
-                    device_id, mac, ip, name, vendor, device_type, risk_label,
-                    first_seen, last_seen, known
+        with self._lock:
+            conn = self._conn()
+            now = datetime.now().isoformat(timespec="seconds")
+            rows = list(devices)
+            with conn:
+                conn.executemany(
+                    """
+                    INSERT INTO devices (
+                        device_id, mac, ip, name, vendor, device_type, risk_label,
+                        first_seen, last_seen, known
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(device_id) DO UPDATE SET
+                        mac=excluded.mac,
+                        ip=excluded.ip,
+                        name=excluded.name,
+                        vendor=excluded.vendor,
+                        device_type=excluded.device_type,
+                        risk_label=excluded.risk_label,
+                        last_seen=excluded.last_seen,
+                        known=excluded.known
+                    """,
+                    [
+                        (
+                            device.id,
+                            device.mac,
+                            device.ip,
+                            device.name,
+                            device.vendor,
+                            device.device_type,
+                            device.risk_label,
+                            device.first_seen.isoformat(timespec="seconds"),
+                            device.last_seen.isoformat(timespec="seconds"),
+                            int(device.known),
+                        )
+                        for device in rows
+                    ],
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(device_id) DO UPDATE SET
-                    mac=excluded.mac,
-                    ip=excluded.ip,
-                    name=excluded.name,
-                    vendor=excluded.vendor,
-                    device_type=excluded.device_type,
-                    risk_label=excluded.risk_label,
-                    last_seen=excluded.last_seen,
-                    known=excluded.known
-                """,
-                (
-                    device.id,
-                    device.mac,
-                    device.ip,
-                    device.name,
-                    device.vendor,
-                    device.device_type,
-                    device.risk_label,
-                    device.first_seen.isoformat(timespec="seconds"),
-                    device.last_seen.isoformat(timespec="seconds"),
-                    int(device.known),
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO metrics (device_id, captured_at, online, latency_ms)
-                VALUES (?, ?, ?, ?)
-                """,
-                (device.id, now, int(device.online), device.latency_ms),
-            )
-        conn.commit()
+                conn.executemany(
+                    """
+                    INSERT INTO metrics (device_id, captured_at, online, latency_ms)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [
+                        (device.id, now, int(device.online), device.latency_ms)
+                        for device in rows
+                    ],
+                )
 
     def record_event(self, event: NetworkEvent, device_id: str | None = None) -> None:
-        conn = self._conn()
-        conn.execute(
-            """
-            INSERT INTO events (captured_at, device_id, level, message)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                event.timestamp.isoformat(timespec="seconds"),
-                device_id,
-                event.level,
-                event.message,
-            ),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._conn()
+            conn.execute(
+                """
+                INSERT INTO events (captured_at, device_id, level, message)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    event.timestamp.isoformat(timespec="seconds"),
+                    device_id,
+                    event.level,
+                    event.message,
+                ),
+            )
+            conn.commit()
 
     def timeline(self, device_id: str, limit: int = 6) -> list[tuple[str, str, str]]:
         rows = self._conn().execute(
@@ -194,15 +206,16 @@ class HistoryStore:
         return int(cursor.rowcount)
 
     def device_records(self) -> list[DeviceMemoryRecord]:
-        rows = self._conn().execute(
-            """
-            SELECT device_id, mac, ip, name, vendor, device_type, risk_label,
-                   first_seen, last_seen, known
-            FROM devices
-            ORDER BY last_seen DESC, name ASC
-            """
-        ).fetchall()
-        return [self._device_memory_record(row) for row in rows]
+        with self._lock:
+            rows = self._conn().execute(
+                """
+                SELECT device_id, mac, ip, name, vendor, device_type, risk_label,
+                       first_seen, last_seen, known
+                FROM devices
+                ORDER BY last_seen DESC, name ASC
+                """
+            ).fetchall()
+            return [self._device_memory_record(row) for row in rows]
 
     def prune_history(self) -> None:
         if self.retention_days <= 0:
